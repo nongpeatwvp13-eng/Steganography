@@ -14,7 +14,6 @@ LSB_DIM = 512
 BIT_PLANE_DIM = 512      
 MAX_HIST_PIXELS = 2_000_000  
 
-# ===== CENTRALIZED SAFE LOADER =====
 def load_image_safe(path, mode='RGB', max_dim=None, dtype=np.uint8):
     try:
         img = Image.open(path).convert(mode)
@@ -24,10 +23,8 @@ def load_image_safe(path, mode='RGB', max_dim=None, dtype=np.uint8):
         
         arr = np.asarray(img, dtype=dtype)
         
-        # Copy to ensure we own the data
         arr = arr.copy()
         
-        # Close immediately
         img.close()
         
         return arr
@@ -46,8 +43,6 @@ def safe_close_and_gc(*images):
                 pass
     gc.collect()
 
-
-# ===== PSNR (Optimized) =====
 _psnr_cache = {}
 def calculate_psnr(original_path, stego_path):
     def load_pair_fast(p1, p2):
@@ -64,7 +59,6 @@ def calculate_psnr(original_path, stego_path):
         
         mse = float(np.mean((arr1 - arr2) ** 2))
         
-        # Clean up immediately
         del arr1, arr2
         gc.collect()
         
@@ -77,8 +71,6 @@ def calculate_psnr(original_path, stego_path):
         print(f"PSNR Error: {e}")
         return 0.0
 
-
-# ===== MSE (Optimized) =====
 def calculate_mse(original_path, stego_path):
     """MSE with memory optimization"""
     try:
@@ -96,17 +88,8 @@ def calculate_mse(original_path, stego_path):
         print(f"MSE Error: {e}")
         return 0.0
 
-
-# ===== SSIM (Optimized) =====
 def calculate_ssim(original_path, stego_path):
-    """
-    SSIM with aggressive optimization
-    - Uses only 512x512 (SSIM is perceptual, doesn't need high res)
-    - Grayscale only
-    - float32
-    """
     try:
-        # SSIM doesn't benefit from high resolution
         arr1 = load_image_safe(original_path, 'L', SSIM_DIM, np.float32)
         arr2 = load_image_safe(stego_path, 'L', SSIM_DIM, np.float32)
         
@@ -131,8 +114,6 @@ def calculate_ssim(original_path, stego_path):
         print(f"SSIM Error: {e}")
         return 0.0
 
-
-# ===== PIXEL DIFFERENCES (Optimized) =====
 def analyze_pixel_differences(original_path, stego_path):
     """Pixel difference analysis with memory optimization"""
     try:
@@ -175,10 +156,7 @@ def analyze_pixel_differences(original_path, stego_path):
         print(f"Pixel Diff Error: {e}")
         return {}
 
-
-# ===== SPATIAL DISTRIBUTION (Optimized) =====
 def analyze_spatial_distribution(original_path, stego_path):
-    """Spatial distribution with memory optimization"""
     try:
         # Use uint8 (we only need comparison, not math)
         arr1 = load_image_safe(original_path, 'RGB', FAST_DIM, np.uint8)
@@ -222,16 +200,7 @@ def analyze_spatial_distribution(original_path, stego_path):
         print(f"Spatial Distribution Error: {e}")
         return {}
 
-
-# ===== HISTOGRAM (HEAVILY Optimized for 16K) =====
 def get_histogram_data(img_path):
-    """
-    🔥 CRITICAL OPTIMIZATION for 16K images
-    
-    Instead of sample_rate approach, use hard pixel limit:
-    - 16K = 268M pixels → resize to ~2M pixels
-    - 50-80x faster than old approach
-    """
     try:
         img = Image.open(img_path).convert('RGB')
         w, h = img.size
@@ -246,7 +215,6 @@ def get_histogram_data(img_path):
             img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
             print(f"  Histogram: scaled from {w}x{h} to {new_w}x{new_h}")
         
-        # Now convert to array (much smaller!)
         arr = np.asarray(img, dtype=np.uint8)
         img.close()
         
@@ -265,10 +233,7 @@ def get_histogram_data(img_path):
         print(f"Histogram Error: {e}")
         return {'red': [], 'green': [], 'blue': []}
 
-
-# ===== HISTOGRAM STATISTICS (Unchanged - already efficient) =====
 def calculate_histogram_statistics_from_data(hist_orig, hist_stego):
-    """Histogram statistics (uses optimized get_histogram_data)"""
     try:     
         result = {}
         for ch in ['red', 'green', 'blue']:
@@ -324,21 +289,7 @@ def calculate_histogram_statistics_from_data(hist_orig, hist_stego):
         print(f"Histogram Stats Error: {e}")
         return {}
 
-
-# ===== LSB ANALYSIS (HEAVILY Optimized) =====
 def analyze_lsb_planes(original_path, stego_path):
-    """
-    🔥 CRITICAL OPTIMIZATION: Visualize only bit0 (LSB)
-    
-    Old approach:
-    - 8 bits × 3 channels × base64 images = 24 images!
-    - Kills CPU and RAM
-    
-    New approach:
-    - Visualize only bit0 (the actual LSB)
-    - Other bits: numeric stats only
-    - 90% reduction in processing time
-    """
     try:
         arr1 = load_image_safe(original_path, 'RGB', BIT_PLANE_DIM, np.uint8)
         arr2 = load_image_safe(stego_path, 'RGB', BIT_PLANE_DIM, np.uint8)
@@ -364,7 +315,6 @@ def analyze_lsb_planes(original_path, stego_path):
                     p0 = 1 - p1
                     entropy = -p0 * np.log2(p0 + 1e-10) - p1 * np.log2(p1 + 1e-10)
                     
-                    # 🔥 KEY OPTIMIZATION: Only visualize bit0 (LSB)
                     visualize = (bit_pos == 0)
                     img_str = None
                     
@@ -411,10 +361,7 @@ def analyze_lsb_planes(original_path, stego_path):
         traceback.print_exc()
         return {}
 
-
-# ===== ENTROPY ANALYSIS (Optimized) =====
 def calculate_image_entropy(original_path, stego_path):
-    """Entropy analysis with reduced resolution"""
     try:
         arr1 = load_image_safe(original_path, 'RGB', LSB_DIM, np.uint8)
         arr2 = load_image_safe(stego_path, 'RGB', LSB_DIM, np.uint8)
@@ -446,16 +393,8 @@ def calculate_image_entropy(original_path, stego_path):
         print(f"Entropy Error: {e}")
         return {}
 
-
-# ===== CORRELATION ANALYSIS (Optimized) =====
 def analyze_pixel_correlation(original_path, stego_path):
-    """
-    Correlation analysis with reduced resolution
-    - Correlation is about trends, not absolute values
-    - 512x512 is sufficient
-    """
     try:
-        # Use float32 for correlation calculations
         arr1 = load_image_safe(original_path, 'RGB', LSB_DIM, np.float32)
         arr2 = load_image_safe(stego_path, 'RGB', LSB_DIM, np.float32)
         
@@ -500,10 +439,7 @@ def analyze_pixel_correlation(original_path, stego_path):
         print(f"Correlation Error: {e}")
         return {}
 
-
-# ===== NOISE ANALYSIS (Optimized) =====
 def analyze_noise_patterns(original_path, stego_path):
-    """Noise analysis with reduced resolution"""
     try:
         arr1 = load_image_safe(original_path, 'L', LSB_DIM, np.float32)
         arr2 = load_image_safe(stego_path, 'L', LSB_DIM, np.float32)
@@ -527,35 +463,19 @@ def analyze_noise_patterns(original_path, stego_path):
         print(f"Noise Error: {e}")
         return {}
 
-
-# ===== IMAGE STATS (Realistic Capacity) =====
 def get_image_stats(image_path, real_capacity=True):
-    """
-    🔥 REALISTIC capacity calculation for adaptive LSB
-    
-    Old approach:
-    - Assumed 2 bits per channel = max theoretical
-    - But adaptive LSB uses 0-2 bits based on scoring
-    
-    New approach:
-    - Realistic average: ~1.2 bits per channel
-    - Based on typical image analysis
-    """
     try:
         img = Image.open(image_path)
         w, h = img.size
         total_pixels = w * h
         
-        # Realistic adaptive LSB capacity
-        avg_bits_per_channel = 1.2  # Realistic for adaptive LSB
+        avg_bits_per_channel = 1.2
         max_bits = int(total_pixels * 3 * avg_bits_per_channel)
         
-        # Account for delimiter
         delimiter_bits = 15 * 8  # '######END######'
         
-        # Account for encryption overhead
         usable_bits = max_bits - delimiter_bits
-        practical_bits = int(usable_bits * 0.7)  # 30% overhead for AES
+        practical_bits = int(usable_bits * 0.7)
         
         practical_chars = practical_bits // 8
         
@@ -577,14 +497,7 @@ def get_image_stats(image_path, real_capacity=True):
     except Exception as e:
         return {"error": str(e)}
 
-
-# ===== COMPREHENSIVE ANALYSIS =====
 def comprehensive_analysis(original_path, stego_path):
-    """
-    Comprehensive steganalysis with 16K optimization
-    
-    All operations are memory-safe for ultra-high resolution images
-    """
     print("Starting comprehensive analysis (16K-optimized)...")
     
     results = {
@@ -618,7 +531,6 @@ def comprehensive_analysis(original_path, stego_path):
         bit_analysis = analyze_lsb_planes(original_path, stego_path)
         results['bit_plane_analysis'] = bit_analysis
         
-        # Backward compatibility
         results['lsb_analysis'] = {}
         for ch in ['red', 'green', 'blue']:
             if ch in bit_analysis and 'bit0' in bit_analysis[ch]:
@@ -642,20 +554,13 @@ def comprehensive_analysis(original_path, stego_path):
         traceback.print_exc()
         return {'error': str(e)}
 
-
-# ===== MEMORY USAGE REPORT =====
 def estimate_memory_usage(image_path):
-    """
-    Estimate memory usage for analysis
-    Helps users understand if their system can handle it
-    """
     try:
         img = Image.open(image_path)
         w, h = img.size
         img.close()
         
-        # Calculate memory for different operations
-        original_size_mb = (w * h * 3 * 4) / (1024 * 1024)  # float32
+        original_size_mb = (w * h * 3 * 4) / (1024 * 1024)
         
         fast_dim_size = min(w, FAST_DIM) * min(h, FAST_DIM) * 3 * 4 / (1024 * 1024)
         ssim_dim_size = min(w, SSIM_DIM) * min(h, SSIM_DIM) * 4 / (1024 * 1024)
