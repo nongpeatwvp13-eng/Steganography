@@ -236,7 +236,7 @@ class UIManager {
             <div class="analysis-section">
                 <h2>Complete Bit Plane Analysis</h2>
                 <p style="color: #666; margin-bottom: 20px;">
-                    Visualization of all 8 bit planes (Bit 0 = LSB, Bit 7 = MSB). 
+                    Visualization of bit plane 
                     White pixels = 1, Black pixels = 0. LSB planes typically show more randomness when data is hidden.
                 </p>`;
         
@@ -246,7 +246,7 @@ class UIManager {
             
             html += `
                 <div class="channel-card" style="margin-bottom: 30px;">
-                    <h3>${channel.toUpperCase()} Channel - All 8 Bit Planes</h3>
+                    <h3>${channel.toUpperCase()} Channel - Bit Plane</h3>
                     <div class="bit-planes-grid">`;
             
             for (let i = 0; i < 8; i++) {
