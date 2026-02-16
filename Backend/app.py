@@ -8,6 +8,8 @@ import logging
 import traceback
 from flask.json.provider import DefaultJSONProvider
 
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 class CustomJSONProvider(DefaultJSONProvider):
     def default(self, obj):
         if isinstance(obj, (np.integer, np.int64)): return int(obj)
@@ -15,7 +17,7 @@ class CustomJSONProvider(DefaultJSONProvider):
         if isinstance(obj, np.ndarray): return obj.tolist()
         return super().default(obj)
 
-app = Flask(__name__, static_folder='dist', static_url_path='')
+app = Flask(__name__, static_folder=os.path.join(BASE_DIR, 'dist'), static_url_path='')
 app.json = CustomJSONProvider(app)
 CORS(app, resources={
     r"/api/*": {
@@ -170,14 +172,15 @@ def check_capacity():
 @app.route('/')
 def index():
     for folder in ['dist', 'Frontend']:
-        path = os.path.join(os.path.dirname(__file__), folder, 'index.html')
-        if os.path.exists(path): return send_file(path)
-    return jsonify({'error': 'Frontend not found'}), 404
+        path = os.path.join(BASE_DIR, folder, 'index.html')
+        if os.path.exists(path): 
+            return send_file(path)
+    return jsonify({'error': 'Frontend not found', 'checked_path': os.path.join(BASE_DIR, 'dist')}), 404
 
 @app.route('/<path:path>')
 def serve_static(path):
     for folder in ['dist', 'Frontend']:
-        dir_path = os.path.join(os.path.dirname(__file__), folder)
+        dir_path = os.path.join(BASE_DIR, folder)
         if os.path.exists(os.path.join(dir_path, path)):
             return send_from_directory(dir_path, path)
     return jsonify({'error': 'File not found'}), 404
