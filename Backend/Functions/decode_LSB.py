@@ -1,102 +1,80 @@
-import numpy as np
 from PIL import Image
+import numpy as np
 import hashlib
 from .AES_256 import SecureAESCipher
-from .decide import initialize_embedding_map, cleanup
+from .decide import AdaptiveLSBDecider
 
 HEADER_BITS = 32
 
-def _get_prng_seed(password: str) -> int:
-    digest = hashlib.sha256(password.encode("utf-8")).digest()
-    return int.from_bytes(digest[:4], "big")
+def _seed(password: str) -> int:
+    d = hashlib.sha256(password.encode()).digest()
+    return int.from_bytes(d[:4], "big")
 
-
-def _get_header_positions(flat_size: int, seed: int) -> np.ndarray:
+def _header_positions(flat_size: int, seed: int):
     rng = np.random.Generator(np.random.PCG64(seed))
-    positions = rng.choice(flat_size, size=HEADER_BITS, replace=False)
-    positions.sort()
-    return positions.astype(np.int64)
-
+    pos = rng.choice(flat_size, size=HEADER_BITS, replace=False)
+    pos.sort()
+    return pos.astype(np.int64)
 
 def decode_LSB(stego_img_path, password):
-    with Image.open(stego_img_path) as img:
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        img_array = np.array(img, dtype=np.uint8)
+    img = Image.open(stego_img_path).convert("RGB")
+    img_array = np.array(img, dtype=np.uint8)
+    flat = img_array.ravel()
+    flat_size = flat.size
 
-    flat_img = img_array.ravel()
-    flat_size = flat_img.size
+    seed = _seed(password)
+    header_positions = _header_positions(flat_size, seed)
 
-    seed = _get_prng_seed(password)
-    header_positions = _get_header_positions(flat_size, seed)
-
-    header_bits = np.empty(HEADER_BITS, dtype=np.uint8)
+    header_bits = np.zeros(HEADER_BITS, dtype=np.uint8)
     for i, pos in enumerate(header_positions):
-        header_bits[i] = flat_img[pos] & np.uint8(1)
+        header_bits[i] = flat[pos] & 1
 
     payload_bit_length = int(
         np.packbits(header_bits).view(">u4")[0]
     )
 
-    if payload_bit_length == 0 or payload_bit_length > flat_size:
-        cleanup()
-        return "Error: No hidden message found (invalid header)"
-
-    print(f"Header decoded: expecting {payload_bit_length} payload bits")
-
-    embedding_map = initialize_embedding_map(img_array, max_bits=2)
-    embedding_map = embedding_map.astype(np.uint8, copy=False)
-
-    flat_map = embedding_map.ravel()
-    target_indices = np.nonzero(flat_map)[0]
+    if payload_bit_length <= 0 or payload_bit_length > flat_size:
+        return "Error: No hidden message"
 
     header_set = set(header_positions.tolist())
-    target_indices = target_indices[
-        ~np.isin(target_indices, list(header_set), assume_unique=True)
-    ]
+    decider = AdaptiveLSBDecider(2)
+    stream = decider.stream(img_array)
 
-    print(f"Extracting from {target_indices.size:,} channels")
-
-    extracted_bits = np.empty(payload_bit_length, dtype=np.uint8)
+    extracted_bits = np.zeros(payload_bit_length, dtype=np.uint8)
     bit_idx = 0
+    rows, cols, channels = img_array.shape
 
-    for count, pos in enumerate(target_indices):
+    for i, j, c, bits in stream:
         if bit_idx >= payload_bit_length:
             break
 
-        bits = int(flat_map[pos])
-        val = flat_img[pos]
+        flat_index = (i * cols * channels) + (j * channels) + c
+
+        if flat_index in header_set:
+            continue
+
+        if bits == 0:
+            continue
 
         remaining = payload_bit_length - bit_idx
+        use = min(bits, remaining)
+        val = flat[flat_index]
 
-        if bits == 1 or remaining == 1:
+        if use == 1:
             extracted_bits[bit_idx] = val & 1
-            bit_idx += 1
         else:
-            extracted_bits[bit_idx]     = (val >> 1) & 1
+            extracted_bits[bit_idx] = (val >> 1) & 1
             extracted_bits[bit_idx + 1] = val & 1
-            bit_idx += 2
 
-        if count % 1_000_000 == 0 and count > 0:
-            print(f"  Processed {count:,} channels", end="\r")
+        bit_idx += use
 
     if bit_idx < payload_bit_length:
-        cleanup()
-        return f"Error: Could only extract {bit_idx}/{payload_bit_length} bits — image may be corrupted"
+        return "Error: Corrupted data"
 
-    num_bytes = payload_bit_length // 8
-    extracted_bits = extracted_bits[:num_bytes * 8]
     byte_array = np.packbits(extracted_bits).tobytes()
-
-    del extracted_bits
-    del flat_map
-    del target_indices
-    del embedding_map
-    cleanup()
 
     cipher = SecureAESCipher(password)
     try:
-        decrypted = cipher.decrypt(byte_array)
-        return decrypted
+        return cipher.decrypt(byte_array)
     except Exception as e:
-        return f"Error: Wrong password or corrupted data — {str(e)}"
+        return f"Error: {str(e)}"
