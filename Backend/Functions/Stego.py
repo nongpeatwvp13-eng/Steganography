@@ -2,69 +2,82 @@ from PIL import Image
 import numpy as np
 from .encode_LSB import encode_LSB
 from .decode_LSB import decode_LSB
+from .decide import initialize_embedding_map
+
 
 def encode_message(input_img_path, message, password, output_img_path):
-    """Wrapper for encoding message into image"""
     return encode_LSB(input_img_path, message, password, output_img_path)
 
+
 def decode_message(stego_img_path, password):
-    """Wrapper for decoding message from image"""
     return decode_LSB(stego_img_path, password)
 
-def get_image_stats(img_path):
-    """Get image statistics and capacity information"""
+
+def get_image_stats(img_path, real_capacity=False):
     try:
-        img = Image.open(img_path)
-        file_format = img.format
-        
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-            
-        img_array = np.array(img, dtype=np.uint8)
-        rows, cols, channels = img_array.shape
-        img.close()
-        
-        total_pixels = rows * cols
-        # Theoretical max: 2 bits per channel * 3 channels per pixel
+        with Image.open(img_path) as img:
+            width, height = img.size
+            mode = img.mode
+            channels = len(img.getbands())
+            file_format = img.format
+
+            if real_capacity:
+                img_array = np.array(img, dtype=np.uint8)
+
+        total_pixels = width * height
+
         theoretical_max_bits = total_pixels * channels * 2
-        
-        # Practical capacity accounting for:
-        # - Delimiter: '######END######' = 15 chars = 120 bits
-        # - AES overhead: ~20-30% for encryption + base64 encoding
-        # - Safety margin: 50% for complex images with low-complexity regions
-        delimiter_bits = len('######END######') * 8
-        encryption_overhead = 0.3
-        safety_margin = 0.5
-        
-        practical_max_bits = int(
-            (theoretical_max_bits - delimiter_bits) * 
-            (1 - encryption_overhead) * 
-            safety_margin
-        )
-        practical_max_chars = practical_max_bits // 8
-        
+
+        delimiter_bits = len("######END######") * 8
+
+        if real_capacity:
+            embedding_map = initialize_embedding_map(img_array, max_bits=2)
+            capacity_bits = int(np.sum(embedding_map))
+            capacity_bits = max(0, capacity_bits - delimiter_bits)
+            capacity_type = "real"
+        else:
+            # Fast heuristic estimate
+            encryption_overhead = 0.3
+            safety_margin = 0.5
+
+            capacity_bits = int(
+                (theoretical_max_bits - delimiter_bits)
+                * (1 - encryption_overhead)
+                * safety_margin
+            )
+            capacity_type = "estimated"
+
+        max_capacity_chars = capacity_bits // 8
+
         return {
-            'width': int(cols),
-            'height': int(rows),
-            'channels': int(channels),
-            'total_pixels': int(total_pixels),
-            'theoretical_max_bits': int(theoretical_max_bits),
-            'practical_max_bits': int(practical_max_bits),
-            'max_capacity_chars': int(practical_max_chars),
-            'format': str(file_format) if file_format else 'Unknown',
-            'mode': 'RGB',
-            'overhead_info': 'Includes AES encryption + delimiter + safety margin'
+            "width": int(width),
+            "height": int(height),
+            "channels": int(channels),
+            "mode": mode,
+            "format": str(file_format) if file_format else "Unknown",
+            "total_pixels": int(total_pixels),
+            "theoretical_max_bits": int(theoretical_max_bits),
+            "practical_max_bits": int(capacity_bits),
+            "max_capacity_chars": int(max_capacity_chars),
+            "capacity_type": capacity_type,
+            "notes": (
+                "Real capacity matches adaptive embedding map"
+                if real_capacity
+                else "Estimated capacity with safety margin"
+            ),
         }
+
     except Exception as e:
         return {
-            'error': str(e),
-            'width': 0,
-            'height': 0,
-            'channels': 3,
-            'total_pixels': 0,
-            'theoretical_max_bits': 0,
-            'practical_max_bits': 0,
-            'max_capacity_chars': 0,
-            'format': 'Unknown',
-            'mode': 'RGB'
+            "error": str(e),
+            "width": 0,
+            "height": 0,
+            "channels": 0,
+            "mode": "Unknown",
+            "format": "Unknown",
+            "total_pixels": 0,
+            "theoretical_max_bits": 0,
+            "practical_max_bits": 0,
+            "max_capacity_chars": 0,
+            "capacity_type": "error",
         }

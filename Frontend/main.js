@@ -1,327 +1,288 @@
-// Main Application Logic
-// Coordinates between UI and API with parallel processing
-
 import uiManager from './ui.js';
-import api from './api.js';
 
-class SteganographyApp {
-    constructor() {
-        this.files = {
-            encode: null,
-            decode: null,
-            analyzeOriginal: null,
-            analyzeStego: null,
-            capacity: null
-        };
-        
-        this.init();
-    }
+const API_BASE = window.location.origin;
 
-    init() {
-        // Initialize tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                const tabName = tab.getAttribute('data-tab');
-                uiManager.switchTab(tabName);
-            });
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('LSB Steganography App Initialized');
+    initializeTabs();
+    initializeFileUploads();
+    initializeForms();
+});
+
+function initializeTabs() {
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.getAttribute('data-tab');
+            uiManager.switchTab(tabName);
         });
+    });
+}
 
-        // Initialize file uploads
-        this.initFileUpload('encode-image-upload', 'encode-image-input', 'encode');
-        this.initFileUpload('decode-image-upload', 'decode-image-input', 'decode');
-        this.initFileUpload('capacity-image-upload', 'capacity-image-input', 'capacity');
-        this.initFileUpload('analyze-original-upload', 'analyze-original-input', 'analyzeOriginal');
-        this.initFileUpload('analyze-stego-upload', 'analyze-stego-input', 'analyzeStego');
+function initializeFileUploads() {
+    const uploads = [
+        { uploadId: 'encode-image-upload', inputId: 'encode-image-input' },
+        { uploadId: 'decode-image-upload', inputId: 'decode-image-input' },
+        { uploadId: 'capacity-image-upload', inputId: 'capacity-image-input' },
+        { uploadId: 'analyze-original-upload', inputId: 'analyze-original-input', previewId: 'analyzeOriginal-preview' },
+        { uploadId: 'analyze-stego-upload', inputId: 'analyze-stego-input', previewId: 'analyzeStego-preview' }
+    ];
 
-        // Initialize form submissions
-        document.getElementById('encode-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleEncode();
-        });
-
-        document.getElementById('decode-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleDecode();
-        });
-
-        document.getElementById('capacity-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleCapacity();
-        });
-
-        document.getElementById('analyze-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleAnalyze();
-        });
-
-        // Auto-check capacity when encoding image is uploaded
-        this.autoCapacityCheck();
-    }
-
-    /**
-     * Initialize file upload with drag & drop
-     */
-    initFileUpload(uploadId, inputId, fileKey) {
+    uploads.forEach(({ uploadId, inputId, previewId }) => {
         const uploadDiv = document.getElementById(uploadId);
         const input = document.getElementById(inputId);
 
         if (!uploadDiv || !input) return;
 
-        // Click to upload
         uploadDiv.addEventListener('click', () => input.click());
 
-        // File selection
         input.addEventListener('change', (e) => {
             const file = e.target.files[0];
-            if (file && this.validateImage(file)) {
-                this.files[fileKey] = file;
-                uiManager.updateFileUpload(uploadDiv, file);
-                
-                // Auto-preview for analysis
-                if (fileKey === 'analyzeOriginal' || fileKey === 'analyzeStego') {
-                    uiManager.previewImage(file, `${fileKey}-preview`);
-                }
+            uiManager.updateFileUpload(uploadDiv, file);
+            
+            if (previewId && file) {
+                uiManager.previewImage(file, previewId);
             }
         });
 
-        // Drag & drop
         uploadDiv.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadDiv.style.borderColor = '#0066cc';
         });
 
         uploadDiv.addEventListener('dragleave', () => {
-            uploadDiv.style.borderColor = '#e0e0e0';
+            uploadDiv.style.borderColor = '';
         });
 
         uploadDiv.addEventListener('drop', (e) => {
             e.preventDefault();
-            uploadDiv.style.borderColor = '#e0e0e0';
+            uploadDiv.style.borderColor = '';
             
             const file = e.dataTransfer.files[0];
-            if (file && this.validateImage(file)) {
-                this.files[fileKey] = file;
+            if (file && file.type.startsWith('image/')) {
                 input.files = e.dataTransfer.files;
                 uiManager.updateFileUpload(uploadDiv, file);
-            }
-        });
-    }
-
-    /**
-     * Validate image file
-     */
-    validateImage(file) {
-        const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/bmp', 'image/webp', 'image/tiff'];
-        const maxSize = 100 * 1024 * 1024; // 100MB
-
-        if (!validTypes.includes(file.type)) {
-            uiManager.showAlert('encode-alert', 'Please select a valid image file (PNG, JPEG, BMP, WEBP, TIFF)', 'error');
-            return false;
-        }
-
-        if (file.size > maxSize) {
-            uiManager.showAlert('encode-alert', 'File size must be less than 100MB', 'error');
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Auto-check capacity when image is uploaded for encoding
-     */
-    autoCapacityCheck() {
-        const input = document.getElementById('encode-image-input');
-        if (!input) return;
-
-        input.addEventListener('change', async () => {
-            if (this.files.encode) {
-                try {
-                    const result = await api.checkCapacity(this.files.encode);
-                    this.displayQuickCapacity(result.capacity);
-                } catch (error) {
-                    console.error('Auto capacity check failed:', error);
+                
+                if (previewId) {
+                    uiManager.previewImage(file, previewId);
                 }
             }
         });
+    });
+}
+
+function initializeForms() {
+    document.getElementById('encode-form').addEventListener('submit', handleEncode);
+    document.getElementById('decode-form').addEventListener('submit', handleDecode);
+    document.getElementById('capacity-form').addEventListener('submit', handleCapacity);
+    document.getElementById('analyze-form').addEventListener('submit', handleAnalyze);
+}
+
+async function handleEncode(e) {
+    e.preventDefault();
+    
+    const imageInput = document.getElementById('encode-image-input');
+    const message = document.getElementById('encode-message').value;
+    const password = document.getElementById('encode-password').value;
+    
+    if (!imageInput.files[0]) {
+        uiManager.showAlert('encode-alert', 'Please select an image', 'error');
+        return;
     }
-
-    /**
-     * Display quick capacity info
-     */
-    displayQuickCapacity(capacity) {
-        const info = document.getElementById('capacity-info');
-        if (!info) return;
-
-        info.innerHTML = `
-            <div class="alert alert-info show">
-                <strong>Image Capacity:</strong> ${uiManager.formatNumber(capacity.max_capacity_chars)} characters
-                (${capacity.width}×${capacity.height} pixels)
-            </div>
-        `;
+    
+    if (password.length < 4) {
+        uiManager.showAlert('encode-alert', 'Password must be at least 4 characters', 'error');
+        return;
     }
-
-    /**
-     * Handle encoding
-     */
-    async handleEncode() {
-        uiManager.clearAll();
-        uiManager.hideResult('encode-result');
+    
+    uiManager.toggleLoading('encode-loading', true);
+    uiManager.toggleResult('encode-result', false);
+    
+    try {
+        const formData = new FormData();
+        formData.append('image', imageInput.files[0]);
+        formData.append('message', message);
+        formData.append('password', password);
         
-        const message = document.getElementById('encode-message').value;
-        const password = document.getElementById('encode-password').value;
-
-        // Validation
-        if (!this.files.encode) {
-            uiManager.showAlert('encode-alert', 'Please select an image', 'error');
-            return;
-        }
-
-        if (!message.trim()) {
-            uiManager.showAlert('encode-alert', 'Please enter a message', 'error');
-            return;
-        }
-
-        if (password.length < 4) {
-            uiManager.showAlert('encode-alert', 'Password must be at least 4 characters', 'error');
-            return;
-        }
-
-        try {
-            uiManager.showLoading('encode-loading');
-            uiManager.setButtonState('encode-btn', false);
-
-            const result = await api.encode(this.files.encode, message, password);
-
-            uiManager.hideLoading('encode-loading');
-            uiManager.setButtonState('encode-btn', true);
-
-            if (result.success) {
-                // Download the encoded image
-                uiManager.downloadBlob(result.blob, result.filename);
-                
-                uiManager.showAlert('encode-alert', '✓ Message encoded successfully! File downloaded.', 'success');
-                
-                // Clear form
-                document.getElementById('encode-message').value = '';
-                document.getElementById('encode-password').value = '';
-            }
-
-        } catch (error) {
-            uiManager.hideLoading('encode-loading');
-            uiManager.setButtonState('encode-btn', true);
-            uiManager.showAlert('encode-alert', error.message, 'error');
-        }
-    }
-
-    /**
-     * Handle decoding
-     */
-    async handleDecode() {
-        uiManager.clearAll();
-        uiManager.hideResult('decode-result');
+        const response = await fetch(`${API_BASE}/api/encode`, {
+            method: 'POST',
+            body: formData
+        });
         
-        const password = document.getElementById('decode-password').value;
-
-        // Validation
-        if (!this.files.decode) {
-            uiManager.showAlert('decode-alert', 'Please select an image', 'error');
-            return;
-        }
-
-        if (!password) {
-            uiManager.showAlert('decode-alert', 'Please enter the password', 'error');
-            return;
-        }
-
-        try {
-            uiManager.showLoading('decode-loading');
-            uiManager.setButtonState('decode-btn', false);
-
-            const result = await api.decode(this.files.decode, password);
-
-            uiManager.hideLoading('decode-loading');
-            uiManager.setButtonState('decode-btn', true);
-
-            if (result.success) {
-                uiManager.displayMessage(result.message, 'decode-result');
-                uiManager.showAlert('decode-alert', '✓ Message decoded successfully!', 'success');
+        if (!response.ok) {
+            let errorMessage = 'Encoding failed';
+            try {
+                const error = await response.json();
+                errorMessage = error.error || errorMessage;
+            } catch {
+                errorMessage = `HTTP ${response.status}: ${response.statusText}`;
             }
-
-        } catch (error) {
-            uiManager.hideLoading('decode-loading');
-            uiManager.setButtonState('decode-btn', true);
-            uiManager.showAlert('decode-alert', error.message, 'error');
+            throw new Error(errorMessage);
         }
-    }
-
-    /**
-     * Handle capacity check
-     */
-    async handleCapacity() {
-        uiManager.clearAll();
-        uiManager.hideResult('capacity-result');
-
-        if (!this.files.capacity) {
-            uiManager.showAlert('capacity-alert', 'Please select an image', 'error');
-            return;
-        }
-
-        try {
-            uiManager.showLoading('capacity-loading');
-            uiManager.setButtonState('capacity-btn', false);
-
-            const result = await api.checkCapacity(this.files.capacity);
-
-            uiManager.hideLoading('capacity-loading');
-            uiManager.setButtonState('capacity-btn', true);
-
-            if (result.success) {
-                uiManager.displayCapacity(result.capacity, 'capacity-result');
-            }
-
-        } catch (error) {
-            uiManager.hideLoading('capacity-loading');
-            uiManager.setButtonState('capacity-btn', true);
-            uiManager.showAlert('capacity-alert', error.message, 'error');
-        }
-    }
-
-    /**
-     * Handle analysis - Process in parallel when possible
-     */
-    async handleAnalyze() {
-        uiManager.clearAll();
-        uiManager.hideResult('analyze-result');
-
-        if (!this.files.analyzeOriginal || !this.files.analyzeStego) {
-            uiManager.showAlert('analyze-alert', 'Please select both original and stego images', 'error');
-            return;
-        }
-
-        try {
-            uiManager.showLoading('analyze-loading');
-            uiManager.setButtonState('analyze-btn', false);
-
-            const result = await api.analyze(this.files.analyzeOriginal, this.files.analyzeStego);
-
-            uiManager.hideLoading('analyze-loading');
-            uiManager.setButtonState('analyze-btn', true);
-
-            if (result.success) {
-                uiManager.displayAnalysis(result, 'analyze-result');
-                uiManager.showAlert('analyze-alert', '✓ Analysis completed!', 'success');
-            }
-
-        } catch (error) {
-            uiManager.hideLoading('analyze-loading');
-            uiManager.setButtonState('analyze-btn', true);
-            uiManager.showAlert('analyze-alert', error.message, 'error');
-        }
+        
+        const blob = await response.blob();
+        uiManager.downloadBlob(blob, 'encoded.png');
+        
+        uiManager.showAlert('encode-alert', 'Message encoded successfully! Image downloaded.', 'success');
+        
+        document.getElementById('encode-form').reset();
+        uiManager.updateFileUpload(document.getElementById('encode-image-upload'), null);
+        
+    } catch (error) {
+        console.error('Encode error:', error);
+        uiManager.showAlert('encode-alert', error.message, 'error');
+    } finally {
+        uiManager.toggleLoading('encode-loading', false);
     }
 }
 
-// Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.app = new SteganographyApp();
-});
+async function handleDecode(e) {
+    e.preventDefault();
+    
+    const imageInput = document.getElementById('decode-image-input');
+    const password = document.getElementById('decode-password').value;
+    
+    if (!imageInput.files[0]) {
+        uiManager.showAlert('decode-alert', 'Please select an image', 'error');
+        return;
+    }
+    
+    uiManager.toggleLoading('decode-loading', true);
+    uiManager.toggleResult('decode-result', false);
+    
+    try {
+        const formData = new FormData();
+        formData.append('image', imageInput.files[0]);
+        formData.append('password', password);
+        
+        const response = await fetch(`${API_BASE}/api/decode`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(`Invalid response from server (HTTP ${response.status})`);
+        }
+        
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Decoding failed');
+        }
+        
+        uiManager.displayMessage(data.message, 'decode-result');
+        uiManager.showAlert('decode-alert', 'Message decoded successfully', 'success');
+        
+    } catch (error) {
+        console.error('Decode error:', error);
+        uiManager.showAlert('decode-alert', error.message, 'error');
+    } finally {
+        uiManager.toggleLoading('decode-loading', false);
+    }
+}
+
+async function handleCapacity(e) {
+    e.preventDefault();
+    
+    const imageInput = document.getElementById('capacity-image-input');
+    
+    if (!imageInput.files[0]) {
+        uiManager.showAlert('capacity-alert', 'Please select an image', 'error');
+        return;
+    }
+    
+    uiManager.toggleLoading('capacity-loading', true);
+    uiManager.toggleResult('capacity-result', false);
+    
+    try {
+        const formData = new FormData();
+        formData.append('image', imageInput.files[0]);
+        
+        const response = await fetch(`${API_BASE}/api/capacity`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(`Invalid response from server (HTTP ${response.status})`);
+        }
+        
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Capacity check failed');
+        }
+        
+        uiManager.displayCapacity(data.capacity, 'capacity-result');
+        uiManager.showAlert('capacity-alert', 'Capacity calculated successfully', 'success');
+        
+    } catch (error) {
+        console.error('Capacity error:', error);
+        uiManager.showAlert('capacity-alert', error.message, 'error');
+    } finally {
+        uiManager.toggleLoading('capacity-loading', false);
+    }
+}
+
+async function handleAnalyze(e) {
+    e.preventDefault();
+    
+    const originalInput = document.getElementById('analyze-original-input');
+    const stegoInput = document.getElementById('analyze-stego-input');
+    
+    if (!originalInput.files[0] || !stegoInput.files[0]) {
+        uiManager.showAlert('analyze-alert', 'Please select both original and stego images', 'error');
+        return;
+    }
+    
+    uiManager.toggleLoading('analyze-loading', true);
+    uiManager.toggleResult('analyze-result', false);
+
+    document.getElementById('analyze-result').innerHTML = '<div id="histogram-charts"></div>';
+    
+    try {
+        const formData = new FormData();
+        formData.append('original', originalInput.files[0]);
+        formData.append('stego', stegoInput.files[0]);
+        
+        console.log('Starting analysis...');
+        
+        const response = await fetch(`${API_BASE}/api/analyze`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error(`Invalid response from server (HTTP ${response.status})`);
+        }
+        
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Analysis failed');
+        }
+        
+        console.log('Analysis complete!', data);
+        
+        uiManager.displayAnalysis(data, 'analyze-result');
+        uiManager.showAlert('analyze-alert', 'Analysis complete! Scroll down to see results.', 'success');
+        
+    } catch (error) {
+        console.error('Analysis error:', error);
+        uiManager.showAlert('analyze-alert', error.message, 'error');
+    } finally {
+        uiManager.toggleLoading('analyze-loading', false);
+    }
+}
+
+window.app = {
+    uiManager,
+    handleEncode,
+    handleDecode,
+    handleCapacity,
+    handleAnalyze
+};
+
+console.log('All handlers initialized');

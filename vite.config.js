@@ -11,32 +11,12 @@ export default defineConfig({
         target: process.env.VITE_API_URL || 'http://localhost:5000',
         changeOrigin: true,
         secure: false,
-        rewrite: (path) => path
       }
-    },
-    hmr: {
-      clientPort: 3000
     }
   },
   build: {
-    outDir: 'dist',
+    outDir: '../dist', 
     emptyOutDir: true,
-    sourcemap: false,
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        drop_console: true,
-        drop_debugger: true
-      }
-    },
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          'chart': ['chart.js']
-        }
-      }
-    },
-    chunkSizeWarningLimit: 1000
   },
   optimizeDeps: {
     include: ['chart.js']

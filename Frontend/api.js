@@ -1,6 +1,3 @@
-// API Client for Steganography App
-// Handles all backend communication with parallel processing support
-
 const API_BASE = '/api';
 
 class SteganographyAPI {
@@ -8,9 +5,6 @@ class SteganographyAPI {
         this.pendingRequests = new Map();
     }
 
-    /**
-     * Encode message into image
-     */
     async encode(imageFile, message, password) {
         const formData = new FormData();
         formData.append('image', imageFile);
@@ -69,9 +63,6 @@ class SteganographyAPI {
         }
     }
 
-    /**
-     * Check image capacity
-     */
     async checkCapacity(imageFile) {
         const formData = new FormData();
         formData.append('image', imageFile);
@@ -97,9 +88,6 @@ class SteganographyAPI {
         }
     }
 
-    /**
-     * Analyze images (original vs stego)
-     */
     async analyze(originalFile, stegoFile) {
         const formData = new FormData();
         formData.append('original', originalFile);
@@ -126,10 +114,6 @@ class SteganographyAPI {
         }
     }
 
-    /**
-     * Batch process multiple operations in parallel
-     * Example: Upload image and check capacity simultaneously
-     */
     async batchProcess(operations) {
         const promises = operations.map(op => {
             switch(op.type) {
@@ -157,9 +141,6 @@ class SteganographyAPI {
         }
     }
 
-    /**
-     * Cancel pending request
-     */
     cancelRequest(requestId) {
         const controller = this.pendingRequests.get(requestId);
         if (controller) {
@@ -168,17 +149,12 @@ class SteganographyAPI {
         }
     }
 
-    /**
-     * Cancel all pending requests
-     */
     cancelAllRequests() {
         this.pendingRequests.forEach(controller => controller.abort());
         this.pendingRequests.clear();
     }
 }
 
-// Create singleton instance
 const api = new SteganographyAPI();
 
-// Export for use in other modules
 export default api;
