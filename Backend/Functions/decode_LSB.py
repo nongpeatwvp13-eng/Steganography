@@ -96,7 +96,7 @@ def decode_LSB(stego_img_path, password):
 
     cipher = SecureAESCipher(password)
     try:
-        decrypted = cipher.decrypt(byte_array.decode("utf-8"))
+        decrypted = cipher.decrypt(byte_array)
         return decrypted
     except Exception as e:
         return f"Error: Wrong password or corrupted data — {str(e)}"
