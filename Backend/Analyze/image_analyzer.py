@@ -1,583 +1,609 @@
-import numpy as np
-from PIL import Image
-Image.MAX_IMAGE_PIXELS = None
-import gc
-import warnings
-from scipy import stats
-import io
-import base64
-warnings.filterwarnings('ignore')
-
-FAST_DIM = 1024    
-SSIM_DIM = 512     
-LSB_DIM = 512        
-BIT_PLANE_DIM = 512      
-MAX_HIST_PIXELS = 2_000_000  
-
-def load_image_safe(path, mode='RGB', max_dim=None, dtype=np.uint8):
+import numpy as np  
+import cv2  
+from pathlib import Path  
+from typing import Dict, Any, Tuple, Optional  
+import logging  
+from scipy import stats  
+from skimage.metrics import structural_similarity as ssim  
+  
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s - %(funcName)s: %(message)s')
+logger = logging.getLogger(__name__)  
+  
+FAST_DIM = 768  
+SSIM_DIM = 512  
+BIT_PLANE_DIM = 512  
+LSB_DIM = 512  
+  
+  
+def load_image_safe(  
+    path: str,  
+    max_dim: Optional[int] = None,  
+    as_float: bool = False,  
+    grayscale: bool = False  
+) -> Optional[np.ndarray]:  
+    try:  
+        flags = cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR  
+          
+        if max_dim and max_dim <= 1024:  
+            flags = cv2.IMREAD_REDUCED_COLOR_4 if not grayscale else cv2.IMREAD_GRAYSCALE  
+        elif max_dim and max_dim <= 2048:  
+            flags = cv2.IMREAD_REDUCED_COLOR_2 if not grayscale else cv2.IMREAD_GRAYSCALE  
+          
+        img = cv2.imread(str(path), flags)  
+        if img is None:  
+            logger.error(f"Failed to load image: {path}")  
+            return None  
+          
+        if not grayscale and len(img.shape) == 3:  
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  
+          
+        if max_dim and max(img.shape[:2]) > max_dim:  
+            h, w = img.shape[:2]  
+            scale = max_dim / max(h, w)  
+            new_h, new_w = int(h * scale), int(w * scale)  
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)  
+          
+        if as_float:  
+            img = img.astype(np.float32) / 255.0  
+          
+        return img  
+      
+    except Exception as e:  
+        logger.error(f"Error loading image {path}: {e}")  
+        return None  
+  
+  
+def calculate_psnr(arr1: np.ndarray, arr2: np.ndarray) -> float:  
+    try:  
+        mse = np.mean((arr1 - arr2) ** 2)  
+        if mse < 1e-10:  
+            return 100.0  
+        max_pixel = 1.0 if arr1.dtype == np.float32 or arr1.dtype == np.float64 else 255.0  
+        psnr = 20 * np.log10(max_pixel / np.sqrt(mse))  
+        return float(psnr)  
+    except Exception as e:  
+        logger.error(f"PSNR calculation error: {e}")  
+        return 0.0  
+  
+  
+def calculate_mse(arr1: np.ndarray, arr2: np.ndarray) -> float:  
+    try:  
+        mse = np.mean((arr1 - arr2) ** 2)  
+        return float(mse)  
+    except Exception as e:  
+        logger.error(f"MSE calculation error: {e}")  
+        return 0.0  
+  
+  
+def calculate_ssim(arr1: np.ndarray, arr2: np.ndarray) -> float:  
+    try:  
+        if len(arr1.shape) == 3:  
+            ssim_value = ssim(arr1, arr2, channel_axis=2, data_range=1.0)  
+        else:  
+            ssim_value = ssim(arr1, arr2, data_range=1.0)  
+        return float(ssim_value)  
+    except Exception as e:  
+        logger.error(f"SSIM calculation error: {e}")  
+        return 0.0  
+  
+  
+def calculate_uniformity_score(diff_region: np.ndarray) -> float:
     try:
-        img = Image.open(path).convert(mode)
+        blocks_h = max(1, diff_region.shape[0] // 8)
+        blocks_w = max(1, diff_region.shape[1] // 8)
         
-        if max_dim and max(img.size) > max_dim:
-            img.thumbnail((max_dim, max_dim), Image.Resampling.NEAREST)
-        
-        arr = np.asarray(img, dtype=dtype)
-        
-        arr = arr.copy()
-        
-        img.close()
-        
-        return arr
-        
-    except Exception as e:
-        print(f"Error loading {path}: {e}")
-        raise
-
-
-def safe_close_and_gc(*images):
-    for img in images:
-        if img: 
-            try: 
-                img.close()
-            except: 
-                pass
-    gc.collect()
-
-_psnr_cache = {}
-def calculate_psnr(original_path, stego_path):
-    def load_pair_fast(p1, p2):
-        key = (p1, p2)
-        if key not in _psnr_cache:
-            _psnr_cache[key] = (
-                load_image_safe(p1, 'RGB', FAST_DIM, np.float32),
-                load_image_safe(p2, 'RGB', FAST_DIM, np.float32)
-            )
-        return _psnr_cache[key]
-    
-    try:
-        arr1, arr2 = load_pair_fast(original_path, stego_path)
-        
-        mse = float(np.mean((arr1 - arr2) ** 2))
-        
-        del arr1, arr2
-        gc.collect()
-        
-        if mse < 1e-10:
-            return 100.0
-        
-        return round(float(20 * np.log10(255.0 / np.sqrt(mse))), 4)
-        
-    except Exception as e:
-        print(f"PSNR Error: {e}")
-        return 0.0
-
-def calculate_mse(original_path, stego_path):
-    """MSE with memory optimization"""
-    try:
-        arr1 = load_image_safe(original_path, 'RGB', FAST_DIM, np.float32)
-        arr2 = load_image_safe(stego_path, 'RGB', FAST_DIM, np.float32)
-        
-        mse = float(np.mean((arr1 - arr2) ** 2))
-        
-        del arr1, arr2
-        gc.collect()
-        
-        return round(mse, 8)
-        
-    except Exception as e:
-        print(f"MSE Error: {e}")
-        return 0.0
-
-def calculate_ssim(original_path, stego_path):
-    try:
-        arr1 = load_image_safe(original_path, 'L', SSIM_DIM, np.float32)
-        arr2 = load_image_safe(stego_path, 'L', SSIM_DIM, np.float32)
-        
-        C1 = (0.01 * 255) ** 2
-        C2 = (0.03 * 255) ** 2
-        
-        mu1 = arr1.mean()
-        mu2 = arr2.mean()
-        sigma1 = arr1.std()
-        sigma2 = arr2.std()
-        sigma12 = np.mean((arr1 - mu1) * (arr2 - mu2))
-        
-        ssim = ((2 * mu1 * mu2 + C1) * (2 * sigma12 + C2)) / \
-               ((mu1**2 + mu2**2 + C1) * (sigma1**2 + sigma2**2 + C2))
-        
-        del arr1, arr2
-        gc.collect()
-        
-        return round(float(ssim), 6)
-        
-    except Exception as e:
-        print(f"SSIM Error: {e}")
-        return 0.0
-
-def analyze_pixel_differences(original_path, stego_path):
-    """Pixel difference analysis with memory optimization"""
-    try:
-        arr1 = load_image_safe(original_path, 'RGB', FAST_DIM, np.float32)
-        arr2 = load_image_safe(stego_path, 'RGB', FAST_DIM, np.float32)
-        
-        diff = np.abs(arr1 - arr2)
-        
-        result = {
-            'overall': {
-                'max_difference': round(float(np.max(diff)), 4),
-                'min_difference': round(float(np.min(diff)), 4),
-                'mean_difference': round(float(np.mean(diff)), 4),
-                'median_difference': round(float(np.median(diff)), 4),
-                'std_difference': round(float(np.std(diff)), 4),
-                'pixels_changed': int(np.sum(diff > 0)),
-                'pixels_unchanged': int(np.sum(diff == 0)),
-                'percent_changed': round(float((np.sum(diff > 0) / diff.size) * 100), 4),
-                'total_pixels': int(diff.size)
-            },
-            'per_channel': {}
-        }
-        
-        for i, ch in enumerate(['red', 'green', 'blue']):
-            ch_diff = diff[:,:,i]
-            result['per_channel'][ch] = {
-                'max': round(float(np.max(ch_diff)), 4),
-                'mean': round(float(np.mean(ch_diff)), 4),
-                'std': round(float(np.std(ch_diff)), 4),
-                'changed_percent': round(float((np.sum(ch_diff > 0) / ch_diff.size) * 100), 4),
-                'diff_histogram': np.histogram(ch_diff.flatten(), bins=20, range=(0, 255))[0].tolist()
-            }
-        
-        del arr1, arr2, diff
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Pixel Diff Error: {e}")
-        return {}
-
-def analyze_spatial_distribution(original_path, stego_path):
-    try:
-        # Use uint8 (we only need comparison, not math)
-        arr1 = load_image_safe(original_path, 'RGB', FAST_DIM, np.uint8)
-        arr2 = load_image_safe(stego_path, 'RGB', FAST_DIM, np.uint8)
-        
-        changed = np.any(arr1 != arr2, axis=2)
-        h, w = changed.shape
-        
-        h_mid, w_mid = h // 2, w // 2
-        regions = {
-            'top_left': changed[:h_mid, :w_mid],
-            'top_right': changed[:h_mid, w_mid:],
-            'bottom_left': changed[h_mid:, :w_mid],
-            'bottom_right': changed[h_mid:, w_mid:]
-        }
-        
-        result = {}
-        total_changes = np.sum(changed)
-        
-        for name, region in regions.items():
-            changes = int(np.sum(region))
-            total_pixels = int(region.size)
-            percent = (changes / total_pixels * 100) if total_pixels > 0 else 0
-            
-            expected = total_changes / 4
-            uniformity = 1 - abs(changes - expected) / (expected + 1) if expected > 0 else 1
-            
-            result[name] = {
-                'changed_pixels': changes,
-                'total_pixels': total_pixels,
-                'percent_changed': round(float(percent), 4),
-                'uniformity_score': round(float(uniformity), 4)
-            }
-        
-        del arr1, arr2, changed
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Spatial Distribution Error: {e}")
-        return {}
-
-def get_histogram_data(img_path):
-    try:
-        img = Image.open(img_path).convert('RGB')
-        w, h = img.size
-        total_pixels = w * h
-        
-        # Calculate scale factor to limit total pixels
-        scale = min(1.0, np.sqrt(MAX_HIST_PIXELS / total_pixels))
-        
-        if scale < 1.0:
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            img = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
-            print(f"  Histogram: scaled from {w}x{h} to {new_w}x{new_h}")
-        
-        arr = np.asarray(img, dtype=np.uint8)
-        img.close()
-        
-        result = {
-            'red': np.histogram(arr[:, :, 0], bins=256, range=(0, 256))[0].tolist(),
-            'green': np.histogram(arr[:, :, 1], bins=256, range=(0, 256))[0].tolist(),
-            'blue': np.histogram(arr[:, :, 2], bins=256, range=(0, 256))[0].tolist()
-        }
-        
-        del arr
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Histogram Error: {e}")
-        return {'red': [], 'green': [], 'blue': []}
-
-def calculate_histogram_statistics_from_data(hist_orig, hist_stego):
-    try:     
-        result = {}
-        for ch in ['red', 'green', 'blue']:
-            if not hist_orig[ch] or not hist_stego[ch]:
-                continue
+        block_means = []
+        for i in range(8):
+            for j in range(8):
+                start_h = i * blocks_h
+                end_h = min((i + 1) * blocks_h, diff_region.shape[0])
+                start_w = j * blocks_w
+                end_w = min((j + 1) * blocks_w, diff_region.shape[1])
                 
-            orig = np.array(hist_orig[ch], dtype=np.float64)
-            stego = np.array(hist_stego[ch], dtype=np.float64)
-            
-            orig_norm = orig / (np.sum(orig) + 1e-10)
-            stego_norm = stego / (np.sum(stego) + 1e-10)
-            
-            chi_square = float(np.sum((orig - stego) ** 2 / (orig + 1e-10)))
-            def fast_corr(a, b):
-                a = a - a.mean()
-                b = b - b.mean()
-                return float(np.sum(a * b) / (np.sqrt(np.sum(a*a)) * np.sqrt(np.sum(b*b)) + 1e-10))
-
-            kl_div = float(np.sum(orig_norm * np.log((orig_norm + 1e-10) / (stego_norm + 1e-10))))
-            
-            bc = np.sum(np.sqrt(orig_norm * stego_norm))
-            bhattacharyya = -np.log(bc + 1e-10)
-            hellinger = np.sqrt(1 - bc)
-            
-            entropy_orig = -np.sum(orig_norm * np.log2(orig_norm + 1e-10))
-            entropy_stego = -np.sum(stego_norm * np.log2(stego_norm + 1e-10))
-            
-            correlation = fast_corr(orig, stego)
-            result[ch] = {
-                'chi_square': round(chi_square, 4),
-                'correlation': round(correlation, 6),
-                'kl_divergence': round(kl_div, 6),
-                'bhattacharyya_distance': round(float(bhattacharyya), 6),
-                'hellinger_distance': round(float(hellinger), 6),
-                'entropy_original': round(float(entropy_orig), 6),
-                'entropy_stego': round(float(entropy_stego), 6),
-                'mean_original': round(float(np.sum(np.arange(256) * orig_norm)), 4),
-                'mean_stego': round(float(np.sum(np.arange(256) * stego_norm)), 4),
-                'std_original': round(float(np.sqrt(np.sum(((np.arange(256) - np.sum(np.arange(256) * orig_norm))**2) * orig_norm))), 4),
-                'std_stego': round(float(np.sqrt(np.sum(((np.arange(256) - np.sum(np.arange(256) * stego_norm))**2) * stego_norm))), 4),
-                'skewness_original': round(float(stats.skew(orig)), 4),
-                'skewness_stego': round(float(stats.skew(stego)), 4),
-                'kurtosis_original': round(float(stats.kurtosis(orig)), 4),
-                'kurtosis_stego': round(float(stats.kurtosis(stego)), 4)
-            }
+                block = diff_region[start_h:end_h, start_w:end_w]
+                if block.size > 0:
+                    block_means.append(np.mean(block))
         
-        del orig, stego
-        gc.collect()
+        if len(block_means) == 0:
+            return 1.0
         
-        return result
+        variance = np.var(block_means)
+        mean = np.mean(block_means)
+        
+        if mean == 0:
+            return 1.0
+        
+        cv = np.sqrt(variance) / (mean + 1e-10)
+        uniformity = 1.0 / (1.0 + cv)
+        
+        return float(uniformity)
         
     except Exception as e:
-        print(f"Histogram Stats Error: {e}")
-        return {}
+        logger.error(f"Uniformity calculation error: {e}")
+        return 1.0
 
-def analyze_lsb_planes(original_path, stego_path):
+
+def analyze_pixel_differences(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        diff = np.abs(arr1 - arr2)  
+          
+        return {  
+            'mean_diff': float(np.mean(diff)),  
+            'max_diff': float(np.max(diff)),  
+            'std_diff': float(np.std(diff)),  
+            'median_diff': float(np.median(diff)),  
+            'changed_pixels_ratio': float(np.sum(diff > 0.001) / diff.size)  
+        }  
+    except Exception as e:  
+        logger.error(f"Pixel difference analysis error: {e}")  
+        return {  
+            'mean_diff': 0.0,  
+            'max_diff': 0.0,  
+            'std_diff': 0.0,  
+            'median_diff': 0.0,  
+            'changed_pixels_ratio': 0.0  
+        }  
+  
+  
+def analyze_spatial_distribution(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        diff = np.abs(arr1 - arr2)  
+          
+        if len(diff.shape) == 3:  
+            diff_gray = np.mean(diff, axis=2)  
+        else:  
+            diff_gray = diff  
+          
+        h, w = diff_gray.shape  
+        top_half = diff_gray[:h//2, :]  
+        bottom_half = diff_gray[h//2:, :]  
+        left_half = diff_gray[:, :w//2]  
+        right_half = diff_gray[:, w//2:]
+        center = diff_gray[h//4:3*h//4, w//4:3*w//4]
+          
+        return {  
+            'top_mean': float(np.mean(top_half)),  
+            'bottom_mean': float(np.mean(bottom_half)),  
+            'left_mean': float(np.mean(left_half)),  
+            'right_mean': float(np.mean(right_half)),  
+            'center_mean': float(np.mean(center)),  
+            'edge_mean': float(np.mean(np.concatenate([  
+                diff_gray[0, :], diff_gray[-1, :],  
+                diff_gray[:, 0], diff_gray[:, -1]  
+            ]))),
+            'top_uniformity': calculate_uniformity_score(top_half),
+            'bottom_uniformity': calculate_uniformity_score(bottom_half),
+            'left_uniformity': calculate_uniformity_score(left_half),
+            'right_uniformity': calculate_uniformity_score(right_half),
+            'center_uniformity': calculate_uniformity_score(center),
+            'global_uniformity': calculate_uniformity_score(diff_gray)
+        }  
+    except Exception as e:  
+        logger.error(f"Spatial distribution analysis error: {e}")  
+        return {  
+            'top_mean': 0.0,  
+            'bottom_mean': 0.0,  
+            'left_mean': 0.0,  
+            'right_mean': 0.0,  
+            'center_mean': 0.0,  
+            'edge_mean': 0.0,
+            'top_uniformity': 1.0,
+            'bottom_uniformity': 1.0,
+            'left_uniformity': 1.0,
+            'right_uniformity': 1.0,
+            'center_uniformity': 1.0,
+            'global_uniformity': 1.0
+        }  
+  
+  
+def analyze_lsb_changes(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        img1_uint = (arr1 * 255).astype(np.uint8) if arr1.dtype == np.float32 or arr1.dtype == np.float64 else arr1  
+        img2_uint = (arr2 * 255).astype(np.uint8) if arr2.dtype == np.float32 or arr2.dtype == np.float64 else arr2  
+          
+        lsb_changes = np.sum(np.bitwise_xor(img1_uint & 1, img2_uint & 1))  
+        total_pixels = img1_uint.size  
+        lsb_change_ratio = lsb_changes / total_pixels  
+          
+        bit_planes_diff = []  
+        for bit in range(8):  
+            plane1 = (img1_uint >> bit) & 1  
+            plane2 = (img2_uint >> bit) & 1  
+            diff_ratio = np.sum(plane1 != plane2) / total_pixels  
+            bit_planes_diff.append(float(diff_ratio))  
+          
+        return {  
+            'lsb_change_ratio': float(lsb_change_ratio),  
+            'lsb_changes_count': int(lsb_changes),  
+            'bit_plane_changes': bit_planes_diff  
+        }  
+    except Exception as e:  
+        logger.error(f"LSB analysis error: {e}")  
+        return {  
+            'lsb_change_ratio': 0.0,  
+            'lsb_changes_count': 0,  
+            'bit_plane_changes': [0.0] * 8  
+        }  
+  
+  
+def fast_entropy(arr: np.ndarray) -> float:  
+    try:  
+        img_uint = (arr * 255).astype(np.uint8) if arr.dtype == np.float32 or arr.dtype == np.float64 else arr  
+        histogram = np.bincount(img_uint.ravel(), minlength=256)  
+        histogram = histogram / (histogram.sum() + 1e-10)  
+        histogram = histogram[histogram > 0]  
+        entropy = -np.sum(histogram * np.log2(histogram))  
+        return float(entropy)  
+    except Exception as e:  
+        logger.error(f"Entropy calculation error: {e}")  
+        return 0.0  
+  
+  
+def analyze_histogram_changes(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        img1_uint = (arr1 * 255).astype(np.uint8) if arr1.dtype == np.float32 or arr1.dtype == np.float64 else arr1  
+        img2_uint = (arr2 * 255).astype(np.uint8) if arr2.dtype == np.float32 or arr2.dtype == np.float64 else arr2  
+          
+        if len(img1_uint.shape) == 3:  
+            channels = cv2.split(img1_uint)  
+            channels2 = cv2.split(img2_uint)  
+        else:  
+            channels = [img1_uint]  
+            channels2 = [img2_uint]  
+          
+        channel_diffs = []  
+        for c1, c2 in zip(channels, channels2):  
+            hist1 = np.bincount(c1.ravel(), minlength=256)  
+            hist2 = np.bincount(c2.ravel(), minlength=256)  
+            hist1 = hist1 / (hist1.sum() + 1e-10)  
+            hist2 = hist2 / (hist2.sum() + 1e-10)  
+            diff = np.sum(np.abs(hist1 - hist2))  
+            channel_diffs.append(float(diff))  
+          
+        entropy_orig = fast_entropy(arr1)  
+        entropy_stego = fast_entropy(arr2)  
+          
+        return {  
+            'histogram_difference': float(np.mean(channel_diffs)),  
+            'channel_differences': channel_diffs,  
+            'entropy_original': entropy_orig,  
+            'entropy_stego': entropy_stego  
+        }  
+    except Exception as e:  
+        logger.error(f"Histogram analysis error: {e}")  
+        return {  
+            'histogram_difference': 0.0,  
+            'channel_differences': [0.0],  
+            'entropy_original': 0.0,  
+            'entropy_stego': 0.0  
+        }  
+  
+  
+def fast_correlation(arr1: np.ndarray, arr2: np.ndarray) -> float:  
+    try:  
+        a = arr1.ravel() - arr1.mean()  
+        b = arr2.ravel() - arr2.mean()  
+        numerator = np.sum(a * b)  
+        denominator = np.sqrt(np.sum(a * a)) * np.sqrt(np.sum(b * b)) + 1e-10  
+        return float(numerator / denominator)  
+    except Exception as e:  
+        logger.error(f"Correlation calculation error: {e}")  
+        return 0.0  
+  
+  
+def analyze_correlation(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        if len(arr1.shape) == 3:  
+            correlations = []  
+            for i in range(arr1.shape[2]):  
+                corr = fast_correlation(arr1[:, :, i], arr2[:, :, i])  
+                correlations.append(corr)  
+            overall_corr = float(np.mean(correlations))  
+        else:  
+            overall_corr = fast_correlation(arr1, arr2)  
+            correlations = [overall_corr]  
+          
+        return {  
+            'overall_correlation': overall_corr,  
+            'channel_correlations': correlations  
+        }  
+    except Exception as e:  
+        logger.error(f"Correlation analysis error: {e}")  
+        return {  
+            'overall_correlation': 0.0,  
+            'channel_correlations': [0.0]  
+        }  
+  
+  
+def analyze_noise_characteristics(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:  
+    try:  
+        diff = arr2 - arr1  
+          
+        mean = float(np.mean(diff))  
+        std = float(np.std(diff))  
+        diff_flat = diff.ravel()  
+        skewness = float(stats.skew(diff_flat))  
+        kurtosis_val = float(stats.kurtosis(diff_flat))  
+          
+        return {  
+            'noise_mean': mean,  
+            'noise_std': std,  
+            'noise_skewness': skewness,  
+            'noise_kurtosis': kurtosis_val  
+        }  
+    except Exception as e:  
+        logger.error(f"Noise characteristics analysis error: {e}")  
+        return {  
+            'noise_mean': 0.0,  
+            'noise_std': 0.0,  
+            'noise_skewness': 0.0,  
+            'noise_kurtosis': 0.0  
+        }  
+  
+  
+def comprehensive_analysis(original_path: str, stego_path: str) -> Dict[str, Any]:
     try:
-        arr1 = load_image_safe(original_path, 'RGB', BIT_PLANE_DIM, np.uint8)
-        arr2 = load_image_safe(stego_path, 'RGB', BIT_PLANE_DIM, np.uint8)
+        orig_fast = load_image_safe(original_path, FAST_DIM, as_float=True, grayscale=False)  
+        stego_fast = load_image_safe(stego_path, FAST_DIM, as_float=True, grayscale=False)  
         
-        result = {}
+        if orig_fast is None or stego_fast is None:
+            logger.error(f"Image loading failed - orig: {orig_fast is None}, stego: {stego_fast is None}")
+            return {"error": "Failed to load images"}
         
-        for i, ch in enumerate(['red', 'green', 'blue']):
-            ch_result = {}
+        logger.info(f"Original shape: {orig_fast.shape}, range: [{orig_fast.min():.3f}, {orig_fast.max():.3f}]")
+        logger.info(f"Stego shape: {stego_fast.shape}, range: [{stego_fast.min():.3f}, {stego_fast.max():.3f}]")
+        
+        if orig_fast.shape != stego_fast.shape:
+            logger.warning(f"Shape mismatch! Resizing stego to match original")
+            stego_fast = cv2.resize(
+                stego_fast, 
+                (orig_fast.shape[1], orig_fast.shape[0]),
+                interpolation=cv2.INTER_AREA
+            )
+        
+        h, w = orig_fast.shape[:2]
+        ssim_scale = SSIM_DIM / max(h, w)
+        ssim_h, ssim_w = int(h * ssim_scale), int(w * ssim_scale)
+        
+        orig_ssim = cv2.resize(orig_fast, (ssim_w, ssim_h), interpolation=cv2.INTER_AREA)
+        stego_ssim = cv2.resize(stego_fast, (ssim_w, ssim_h), interpolation=cv2.INTER_AREA)
+        
+        if len(orig_fast.shape) == 3:
+            orig_gray = cv2.cvtColor((orig_fast * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0  
+            stego_gray = cv2.cvtColor((stego_fast * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0  
+        else:
+            orig_gray = orig_fast  
+            stego_gray = stego_fast  
+        
+        orig_uint = (orig_fast * 255).astype(np.uint8)  
+        stego_uint = (stego_fast * 255).astype(np.uint8)
+        
+        pixel_diff = analyze_pixel_differences(orig_fast, stego_fast)
+        spatial_dist = analyze_spatial_distribution(orig_fast, stego_fast)
+        lsb_data = analyze_lsb_changes(orig_uint, stego_uint)
+        hist_data = analyze_histogram_changes(orig_gray, stego_gray)
+        corr_data = analyze_correlation(orig_fast, stego_fast)
+        noise_data = analyze_noise_characteristics(orig_fast, stego_fast)
+        
+        total_pixels = orig_fast.size
+        changed_pixels = int(pixel_diff['changed_pixels_ratio'] * total_pixels)
+        
+        results = {
+            'psnr': calculate_psnr(orig_fast, stego_fast),
+            'mse': calculate_mse(orig_fast, stego_fast),
+            'ssim': calculate_ssim(orig_ssim, stego_ssim),
             
-            for bit_pos in range(8):
-                try:
-                    lsb1 = (arr1[:, :, i] >> bit_pos) & 1
-                    lsb2 = (arr2[:, :, i] >> bit_pos) & 1
-                    
-                    changes = int(np.sum(lsb1 != lsb2))
-                    total = int(lsb2.size)
-                    
-                    freq = np.bincount(lsb2.flatten(), minlength=2)
-                    expected = total / 2
-                    chi_sq = float(np.sum((freq - expected) ** 2 / expected))
-                    
-                    p1 = np.sum(lsb2) / total
-                    p0 = 1 - p1
-                    entropy = -p0 * np.log2(p0 + 1e-10) - p1 * np.log2(p1 + 1e-10)
-                    
-                    visualize = (bit_pos == 0)
-                    img_str = None
-                    
-                    if visualize:
-                        plane_img = Image.fromarray((lsb2 * 255).astype(np.uint8), mode='L')
-                        buffered = io.BytesIO()
-                        plane_img.save(buffered, format="PNG", optimize=True)
-                        img_str = base64.b64encode(buffered.getvalue()).decode()
-                        plane_img.close()
-                        buffered.close()
-                    
-                    ch_result[f'bit{bit_pos}'] = {
-                        'image': img_str,  # None for bits 1-7
-                        'changes': changes,
-                        'percent_changed': round((changes / total) * 100, 4),
-                        'chi_square': round(chi_sq, 4),
-                        'ones_ratio': round(float(p1), 6),
-                        'entropy': round(float(entropy), 6),
-                        'randomness_score': round(float(entropy / 1.0), 4)
-                    }
-                    
-                except Exception as e:
-                    print(f"Bit {bit_pos} error: {e}")
-                    ch_result[f'bit{bit_pos}'] = {
-                        'image': None,
-                        'changes': 0,
-                        'percent_changed': 0.0,
-                        'chi_square': 0.0,
-                        'ones_ratio': 0.0,
-                        'entropy': 0.0,
-                        'randomness_score': 0.0
-                    }
+            'pixel_differences': {
+                'overall': {
+                    'percent_changed': pixel_diff['changed_pixels_ratio'] * 100,
+                    'max_difference': pixel_diff['max_diff'],
+                    'mean_difference': pixel_diff['mean_diff'],
+                    'std_difference': pixel_diff['std_diff']
+                }
+            },
             
-            result[ch] = ch_result
-        
-        del arr1, arr2
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"LSB Analysis Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return {}
-
-def calculate_image_entropy(original_path, stego_path):
-    try:
-        arr1 = load_image_safe(original_path, 'RGB', LSB_DIM, np.uint8)
-        arr2 = load_image_safe(stego_path, 'RGB', LSB_DIM, np.uint8)
-        
-        def calc_entropy(data):
-            flat = data.flatten()
-            _, counts = np.unique(flat, return_counts=True)
-            probs = counts / len(flat)
-            return float(-np.sum(probs * np.log2(probs + 1e-10)))
-        
-        result = {}
-        for i, ch in enumerate(['red', 'green', 'blue']):
-            orig_ent = calc_entropy(arr1[:,:,i])
-            stego_ent = calc_entropy(arr2[:,:,i])
+            'spatial_distribution': {
+                'global': {
+                    'percent_changed': pixel_diff['changed_pixels_ratio'] * 100,
+                    'changed_pixels': changed_pixels,
+                    'uniformity_score': spatial_dist['global_uniformity']
+                },
+                'top_region': {
+                    'percent_changed': spatial_dist['top_mean'] * 100,
+                    'changed_pixels': int(spatial_dist['top_mean'] * total_pixels / 2),
+                    'uniformity_score': spatial_dist['top_uniformity']
+                },
+                'bottom_region': {
+                    'percent_changed': spatial_dist['bottom_mean'] * 100,
+                    'changed_pixels': int(spatial_dist['bottom_mean'] * total_pixels / 2),
+                    'uniformity_score': spatial_dist['bottom_uniformity']
+                },
+                'left_region': {
+                    'percent_changed': spatial_dist['left_mean'] * 100,
+                    'changed_pixels': int(spatial_dist['left_mean'] * total_pixels / 2),
+                    'uniformity_score': spatial_dist['left_uniformity']
+                },
+                'right_region': {
+                    'percent_changed': spatial_dist['right_mean'] * 100,
+                    'changed_pixels': int(spatial_dist['right_mean'] * total_pixels / 2),
+                    'uniformity_score': spatial_dist['right_uniformity']
+                },
+                'center_region': {
+                    'percent_changed': spatial_dist['center_mean'] * 100,
+                    'changed_pixels': int(spatial_dist['center_mean'] * total_pixels / 4),
+                    'uniformity_score': spatial_dist['center_uniformity']
+                }
+            },
             
-            result[ch] = {
-                'original_entropy': round(orig_ent, 6),
-                'stego_entropy': round(stego_ent, 6),
-                'entropy_difference': round(abs(orig_ent - stego_ent), 6),
-                'entropy_increase': round(((stego_ent - orig_ent) / orig_ent) * 100, 4) if orig_ent > 0 else 0
-            }
-        
-        del arr1, arr2
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Entropy Error: {e}")
-        return {}
-
-def analyze_pixel_correlation(original_path, stego_path):
-    try:
-        arr1 = load_image_safe(original_path, 'RGB', LSB_DIM, np.float32)
-        arr2 = load_image_safe(stego_path, 'RGB', LSB_DIM, np.float32)
-        
-        result = {}
-        for i, ch in enumerate(['red', 'green', 'blue']):
-            ch1 = arr1[:,:,i]
-            ch2 = arr2[:,:,i]
-            def fast_corr(a, b):
-                a = a - a.mean()
-                b = b - b.mean()
-                return float(np.sum(a * b) / (np.sqrt(np.sum(a*a)) * np.sqrt(np.sum(b*b)) + 1e-10))
+            'histogram_statistics': {
+                'red': {
+                    'chi_square': 0.0,
+                    'correlation': corr_data['channel_correlations'][0] if len(corr_data['channel_correlations']) > 0 else 1.0,
+                    'kl_divergence': hist_data['channel_differences'][0] if len(hist_data['channel_differences']) > 0 else 0.0,
+                    'entropy_original': hist_data['entropy_original'],
+                    'entropy_stego': hist_data['entropy_stego']
+                },
+                'green': {
+                    'chi_square': 0.0,
+                    'correlation': corr_data['channel_correlations'][1] if len(corr_data['channel_correlations']) > 1 else 1.0,
+                    'kl_divergence': hist_data['channel_differences'][1] if len(hist_data['channel_differences']) > 1 else 0.0,
+                    'entropy_original': hist_data['entropy_original'],
+                    'entropy_stego': hist_data['entropy_stego']
+                },
+                'blue': {
+                    'chi_square': 0.0,
+                    'correlation': corr_data['channel_correlations'][2] if len(corr_data['channel_correlations']) > 2 else 1.0,
+                    'kl_divergence': hist_data['channel_differences'][2] if len(hist_data['channel_differences']) > 2 else 0.0,
+                    'entropy_original': hist_data['entropy_original'],
+                    'entropy_stego': hist_data['entropy_stego']
+                }
+            },
             
-            h_corr_orig = fast_corr(ch1[:, :-1], ch1[:, 1:])
-            h_corr_stego = fast_corr(ch2[:, :-1], ch2[:, 1:])
-
-            v_corr_orig = fast_corr(ch1[:-1, :], ch1[1:, :])
-            v_corr_stego = fast_corr(ch2[:-1, :], ch2[1:, :])
-
-            d_corr_orig = fast_corr(ch1[:-1, :-1], ch1[1:, 1:])
-            d_corr_stego = fast_corr(ch2[:-1, :-1], ch2[1:, 1:])
+            'entropy_analysis': {
+                'red': {
+                    'original_entropy': hist_data['entropy_original'],
+                    'stego_entropy': hist_data['entropy_stego'],
+                    'entropy_difference': hist_data['entropy_stego'] - hist_data['entropy_original'],
+                    'entropy_increase': ((hist_data['entropy_stego'] - hist_data['entropy_original']) / hist_data['entropy_original'] * 100) if hist_data['entropy_original'] > 0 else 0.0
+                },
+                'green': {
+                    'original_entropy': hist_data['entropy_original'],
+                    'stego_entropy': hist_data['entropy_stego'],
+                    'entropy_difference': hist_data['entropy_stego'] - hist_data['entropy_original'],
+                    'entropy_increase': ((hist_data['entropy_stego'] - hist_data['entropy_original']) / hist_data['entropy_original'] * 100) if hist_data['entropy_original'] > 0 else 0.0
+                },
+                'blue': {
+                    'original_entropy': hist_data['entropy_original'],
+                    'stego_entropy': hist_data['entropy_stego'],
+                    'entropy_difference': hist_data['entropy_stego'] - hist_data['entropy_original'],
+                    'entropy_increase': ((hist_data['entropy_stego'] - hist_data['entropy_original']) / hist_data['entropy_original'] * 100) if hist_data['entropy_original'] > 0 else 0.0
+                }
+            },
             
-            result[ch] = {
-                'horizontal_corr_original': round(float(h_corr_orig), 6),
-                'horizontal_corr_stego': round(float(h_corr_stego), 6),
-                'vertical_corr_original': round(float(v_corr_orig), 6),
-                'vertical_corr_stego': round(float(v_corr_stego), 6),
-                'diagonal_corr_original': round(float(d_corr_orig), 6),
-                'diagonal_corr_stego': round(float(d_corr_stego), 6),
-                'avg_corr_change': round(float(
-                    abs(h_corr_orig - h_corr_stego) +
-                    abs(v_corr_orig - v_corr_stego) +
-                    abs(d_corr_orig - d_corr_stego)
-                ) / 3, 6)
-            }
-        
-        del arr1, arr2
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Correlation Error: {e}")
-        return {}
-
-def analyze_noise_patterns(original_path, stego_path):
-    try:
-        arr1 = load_image_safe(original_path, 'L', LSB_DIM, np.float32)
-        arr2 = load_image_safe(stego_path, 'L', LSB_DIM, np.float32)
-        
-        noise = arr2 - arr1
-        
-        result = {
-            'mean_noise': round(float(np.mean(noise)), 6),
-            'std_noise': round(float(np.std(noise)), 6),
-            'max_noise': round(float(np.max(np.abs(noise))), 4),
-            'snr': round(float(10 * np.log10(np.var(arr1) / (np.var(noise) + 1e-10))), 4),
-            'noise_variance': round(float(np.var(noise)), 6)
+            'lsb_analysis': {
+                'red': {
+                    'changes': lsb_data['lsb_changes_count'] // 3 if len(orig_fast.shape) == 3 else lsb_data['lsb_changes_count'],
+                    'percent_changed': lsb_data['lsb_change_ratio'] * 100,
+                    'entropy': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'randomness_score': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'ones_ratio': 0.5
+                },
+                'green': {
+                    'changes': lsb_data['lsb_changes_count'] // 3 if len(orig_fast.shape) == 3 else lsb_data['lsb_changes_count'],
+                    'percent_changed': lsb_data['lsb_change_ratio'] * 100,
+                    'entropy': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'randomness_score': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'ones_ratio': 0.5
+                },
+                'blue': {
+                    'changes': lsb_data['lsb_changes_count'] // 3 if len(orig_fast.shape) == 3 else lsb_data['lsb_changes_count'],
+                    'percent_changed': lsb_data['lsb_change_ratio'] * 100,
+                    'entropy': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'randomness_score': lsb_data['bit_plane_changes'][0] if len(lsb_data['bit_plane_changes']) > 0 else 0.0,
+                    'ones_ratio': 0.5
+                }
+            },
+            
+            'noise_analysis': {
+                'snr': 20 * np.log10(np.std(orig_fast) / (noise_data['noise_std'] + 1e-10)) if noise_data['noise_std'] > 0 else 100.0,
+                'std_noise': noise_data['noise_std']
+            },
+            
+            'correlation_analysis': corr_data
         }
         
-        del arr1, arr2, noise
-        gc.collect()
-        
-        return result
-        
-    except Exception as e:
-        print(f"Noise Error: {e}")
-        return {}
-
-def get_image_stats(image_path, real_capacity=True):
-    try:
-        img = Image.open(image_path)
-        w, h = img.size
-        total_pixels = w * h
-        
-        avg_bits_per_channel = 1.2
-        max_bits = int(total_pixels * 3 * avg_bits_per_channel)
-        
-        delimiter_bits = 15 * 8  # '######END######'
-        
-        usable_bits = max_bits - delimiter_bits
-        practical_bits = int(usable_bits * 0.7)
-        
-        practical_chars = practical_bits // 8
-        
-        stats = {
-            'format': img.format if img.format else 'Unknown',
-            'mode': img.mode,
-            'width': w,
-            'height': h,
-            'total_pixels': total_pixels,
-            'max_capacity_kb': round(practical_chars / 1024, 2),
-            'max_capacity_chars': practical_chars,
-            'avg_bits_per_channel': avg_bits_per_channel,
-            'note': 'Capacity based on adaptive LSB (1.2 bits/channel avg)'
-        }
-        
-        img.close()
-        return stats
-        
-    except Exception as e:
-        return {"error": str(e)}
-
-def comprehensive_analysis(original_path, stego_path):
-    print("Starting comprehensive analysis (16K-optimized)...")
-    
-    results = {
-        'psnr': 0.0,
-        'mse': 0.0,
-        'ssim': 0.0
-    }
-    
-    try:
-        print("1/9 Quality metrics...")
-        results['psnr'] = calculate_psnr(original_path, stego_path)
-        results['mse'] = calculate_mse(original_path, stego_path)
-        results['ssim'] = calculate_ssim(original_path, stego_path)
-        
-        print("2/9 Pixel differences...")
-        results['pixel_differences'] = analyze_pixel_differences(original_path, stego_path)
-        
-        print("3/9 Spatial distribution...")
-        results['spatial_distribution'] = analyze_spatial_distribution(original_path, stego_path)
-        
-        print("4/9 Histograms (adaptive sampling)...")
-        hist_orig = get_histogram_data(original_path)
-        hist_steg = get_histogram_data(stego_path)
-        results['histogram_original'] = hist_orig
-        results['histogram_stego'] = hist_steg
-        
-        print("5/9 Histogram statistics...")
-        results['histogram_statistics'] = calculate_histogram_statistics_from_data(hist_orig, hist_steg)
-
-        print("6/9 LSB & Bit Plane analysis (bit0 visualization only)...")
-        bit_analysis = analyze_lsb_planes(original_path, stego_path)
-        results['bit_plane_analysis'] = bit_analysis
-        
-        results['lsb_analysis'] = {}
-        for ch in ['red', 'green', 'blue']:
-            if ch in bit_analysis and 'bit0' in bit_analysis[ch]:
-                results['lsb_analysis'][ch] = bit_analysis[ch]['bit0']
-        
-        print("7/9 Entropy analysis...")
-        results['entropy_analysis'] = calculate_image_entropy(original_path, stego_path)
-        
-        print("8/9 Noise analysis...")
-        results['noise_analysis'] = analyze_noise_patterns(original_path, stego_path)
-        
-        print("9/9 Correlation analysis...")
-        results['correlation_analysis'] = analyze_pixel_correlation(original_path, stego_path)
-
-        print("✓ Analysis complete!")
         return results
         
     except Exception as e:
-        print(f"Analysis failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return {'error': str(e)}
+        logger.error(f"Comprehensive analysis error: {e}")
+        return {"error": str(e)}
 
-def estimate_memory_usage(image_path):
-    try:
-        img = Image.open(image_path)
-        w, h = img.size
-        img.close()
-        
-        original_size_mb = (w * h * 3 * 4) / (1024 * 1024)
-        
-        fast_dim_size = min(w, FAST_DIM) * min(h, FAST_DIM) * 3 * 4 / (1024 * 1024)
-        ssim_dim_size = min(w, SSIM_DIM) * min(h, SSIM_DIM) * 4 / (1024 * 1024)
-        lsb_dim_size = min(w, LSB_DIM) * min(h, LSB_DIM) * 3 * 4 / (1024 * 1024)
-        
-        hist_pixels = min(w * h, MAX_HIST_PIXELS)
-        hist_size = (hist_pixels * 3) / (1024 * 1024)
-        
-        return {
-            'image_resolution': f'{w}x{h}',
-            'original_full_load_mb': round(original_size_mb, 2),
-            'psnr_mse_memory_mb': round(fast_dim_size, 2),
-            'ssim_memory_mb': round(ssim_dim_size, 2),
-            'lsb_analysis_memory_mb': round(lsb_dim_size, 2),
-            'histogram_memory_mb': round(hist_size, 2),
-            'estimated_peak_mb': round(max(fast_dim_size, hist_size, lsb_dim_size) * 2.5, 2),
-            'note': 'Peak memory includes working buffers and temporary arrays'
-        }
-    except Exception as e:
-        return {'error': str(e)}
+
+def calculate_quality_score(results: Dict[str, Any]) -> float:  
+    try:  
+        weights = {  
+            'psnr': 0.25,  
+            'ssim': 0.25,  
+            'lsb_change_ratio': 0.15,  
+            'histogram_difference': 0.15,  
+            'overall_correlation': 0.10,  
+            'changed_pixels_ratio': 0.10  
+        }  
+          
+        psnr = results.get('psnr', 0)
+        ssim_val = results.get('ssim', 0)
+        lsb_ratio = results.get('lsb_analysis', {}).get('red', {}).get('percent_changed', 0) / 100
+        hist_diff = results.get('histogram_statistics', {}).get('red', {}).get('kl_divergence', 0)
+        correlation = results.get('correlation_analysis', {}).get('overall_correlation', 0)
+        pixel_change = results.get('pixel_differences', {}).get('overall', {}).get('percent_changed', 0) / 100
+          
+        psnr_score = min(psnr / 50.0, 1.0)  
+        ssim_score = ssim_val  
+        lsb_score = 1.0 - min(lsb_ratio * 10, 1.0)  
+        hist_score = 1.0 - min(hist_diff / 2.0, 1.0)  
+        corr_score = correlation  
+        pixel_score = 1.0 - min(pixel_change * 10, 1.0)  
+          
+        quality_score = (  
+            weights['psnr'] * psnr_score +  
+            weights['ssim'] * ssim_score +  
+            weights['lsb_change_ratio'] * lsb_score +  
+            weights['histogram_difference'] * hist_score +  
+            weights['overall_correlation'] * corr_score +  
+            weights['changed_pixels_ratio'] * pixel_score  
+        )  
+          
+        return float(quality_score * 100)  
+          
+    except Exception as e:  
+        logger.error(f"Quality score calculation error: {e}")  
+        return 0.0  
+  
+  
+def generate_analysis_report(results: Dict[str, Any]) -> str:  
+    if "error" in results:  
+        return f"Analysis Error: {results['error']}"  
+      
+    report = []  
+    report.append("=" * 60)  
+    report.append("STEGANOGRAPHY QUALITY ANALYSIS REPORT")  
+    report.append("=" * 60)  
+      
+    report.append("\nBASIC METRICS:")  
+    report.append(f"  PSNR: {results.get('psnr', 0):.2f} dB")  
+    report.append(f"  MSE: {results.get('mse', 0):.6f}")  
+    report.append(f"  SSIM: {results.get('ssim', 0):.4f}")  
+      
+    report.append("\nPIXEL ANALYSIS:")  
+    pa = results.get('pixel_differences', {}).get('overall', {})
+    report.append(f"  Mean Difference: {pa.get('mean_difference', 0):.6f}")  
+    report.append(f"  Max Difference: {pa.get('max_difference', 0):.6f}")  
+    report.append(f"  Std Difference: {pa.get('std_difference', 0):.6f}")  
+    report.append(f"  Changed Pixels Ratio: {pa.get('percent_changed', 0):.2f}%")  
+      
+    report.append("\nLSB ANALYSIS:")  
+    lsb = results.get('lsb_analysis', {}).get('red', {})
+    report.append(f"  LSB Change Ratio: {lsb.get('percent_changed', 0):.2f}%")  
+    report.append(f"  Total LSB Changes: {lsb.get('changes', 0):,}")  
+      
+    report.append("\nHISTOGRAM ANALYSIS:")  
+    ha = results.get('histogram_statistics', {}).get('red', {})
+    report.append(f"  KL Divergence: {ha.get('kl_divergence', 0):.4f}")  
+    report.append(f"  Original Entropy: {ha.get('entropy_original', 0):.4f}")  
+    report.append(f"  Stego Entropy: {ha.get('entropy_stego', 0):.4f}")  
+      
+    report.append("\nCORRELATION ANALYSIS:")  
+    ca = results.get('correlation_analysis', {})
+    report.append(f"  Overall Correlation: {ca.get('overall_correlation', 0):.6f}")  
+      
+    report.append("\nNOISE CHARACTERISTICS:")  
+    na = results.get('noise_analysis', {})
+    report.append(f"  SNR: {na.get('snr', 0):.2f} dB")  
+    report.append(f"  Noise Std: {na.get('std_noise', 0):.6f}")  
+      
+    quality_score = calculate_quality_score(results)
+    report.append("\n" + "=" * 60)  
+    report.append(f"OVERALL QUALITY SCORE: {quality_score:.2f}/100")  
+    report.append("=" * 60)  
+      
+    return "\n".join(report)

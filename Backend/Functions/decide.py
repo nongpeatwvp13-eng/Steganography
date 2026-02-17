@@ -1,93 +1,164 @@
 import numpy as np
 from scipy import ndimage as nd
+import hashlib
 
-class AdaptiveLSBDecider:
-    def __init__(self, max_bits_per_channel: int = 2):
-        self.max_bits = max_bits_per_channel
-        self.blue_channel_bonus = 5
+class AdaptiveLSBCore:
+    def __init__(self, max_bits=2, block_rows=128, seed_key="default"):
+        self.max_bits = max_bits
+        self.blue_bonus = 5
+        self.block_rows = block_rows
 
-    def _complexity(self, channel):
-        f = channel.astype(np.float32, copy=False)
-        mean = nd.uniform_filter(f, size=3, mode="nearest")
-        sq_mean = nd.uniform_filter(f * f, size=3, mode="nearest")
-        var = sq_mean - mean * mean
-        var[var < 0] = 0
-        return np.sqrt(var, dtype=np.float32)
+        seed_hash = hashlib.sha256(seed_key.encode()).digest()
+        seed_int = int.from_bytes(seed_hash[:8], "big")
+        self.rng = np.random.default_rng(seed_int)
 
-    def _gradient(self, channel):
-        f = channel.astype(np.float32, copy=False)
-        gx = nd.sobel(f, axis=1, mode="nearest")
-        gy = nd.sobel(f, axis=0, mode="nearest")
-        return np.sqrt(gx * gx + gy * gy, dtype=np.float32)
+    def _zone(self, block):
+        r = block[:, :, 0]
+        g = block[:, :, 1]
+        b = block[:, :, 2]
 
-    def _zone_map(self, img):
-        r, g, b = img[:,:,0], img[:,:,1], img[:,:,2]
-        z = np.zeros((r.shape[0], r.shape[1]), dtype=np.uint8)
-        green = (g > r) & (g > b)
-        z[green] = 1
-        cyan = (g > 100) & (b > 100)
-        z[cyan] = 2
-        other = ~(green | cyan)
-        z[other] = 3
+        z = np.full((block.shape[0], block.shape[1]), 25, dtype=np.uint8)
+        z[(g > r) & (g > b)] = 15
+        z[(g > 100) & (b > 100)] = 20
         return z
 
-    def generate_embedding_map(self, img):
+    def _variance(self, ch):
+        ch = ch >> self.max_bits
+        m = nd.uniform_filter(ch, 3, mode="nearest")
+        s = nd.uniform_filter(ch * ch, 3, mode="nearest")
+        v = s - m * m
+        v[v < 0] = 0
+        return v
+
+    def _grad(self, ch):
+        ch = ch >> self.max_bits
+        gx = nd.sobel(ch, 1, mode="nearest")
+        gy = nd.sobel(ch, 0, mode="nearest")
+        return gx * gx + gy * gy
+
+    def _score(self, zone, var, grad, channel_index):
+        score = zone.copy()
+
+        score += np.where(var < 225, 5,
+                 np.where(var < 900, 20,
+                 np.where(var < 2500, 30, 25))).astype(np.uint8)
+
+        score += np.where(grad < 100, 5,
+                 np.where(grad < 900, 15,
+                 np.where(grad < 3600, 25, 20))).astype(np.uint8)
+
+        if channel_index == 2:
+            score += self.blue_bonus
+
+        return score
+
+    def encode(self, img, bit_array):
         rows, cols, ch = img.shape
-        z = self._zone_map(img)
-        embedding_map = np.zeros((rows, cols, ch), dtype=np.uint8)
+        flat = img.reshape(-1)
 
-        for c in range(ch):
-            channel = img[:,:,c]
-            comp = self._complexity(channel)
-            grad = self._gradient(channel)
-            score = np.zeros((rows, cols), dtype=np.uint16)
+        bit_len = len(bit_array)
+        bit_idx = 0
 
-            score[z == 0] += 15
-            score[z == 2] += 20
-            score[z == 3] += 25
+        for rs in range(0, rows, self.block_rows):
+            re = min(rs + self.block_rows, rows)
+            block = img[rs:re]
+            zone = self._zone(block)
 
-            score[comp < 15] += 5
-            score[(comp >= 15) & (comp < 30)] += 20
-            score[(comp >= 30) & (comp < 50)] += 30
-            score[comp >= 50] += 25
+            for c in range(ch):
+                channel = block[:, :, c]
 
-            score[grad < 10] += 5
-            score[(grad >= 10) & (grad < 30)] += 15
-            score[(grad >= 30) & (grad < 60)] += 25
-            score[grad >= 60] += 20
+                var = self._variance(channel)
+                grad = self._grad(channel)
+                score = self._score(zone, var, grad, c)
 
-            if c == 2:
-                score += self.blue_channel_bonus
+                mask = score >= 40
+                local_idx = np.flatnonzero(mask.ravel())
+                if local_idx.size > 0:
+                    self.rng.shuffle(local_idx)
 
-            embedding_map[:,:,c][score >= 60] = self.max_bits
-            embedding_map[:,:,c][(score >= 40) & (score < 60)] = 1
+                bits_per = np.where(score.ravel()[local_idx] >= 60, 2, 1)
+                global_idx = ((rs * cols * ch) + c) + (local_idx * ch)
 
-        return embedding_map
+                for idx, b in zip(global_idx, bits_per):
+                    if bit_idx >= bit_len:
+                        self.last_bit_index = bit_idx
+                        return img
+
+                    remaining = bit_len - bit_idx
+                    use = min(b, remaining)
+
+                    if use == 1:
+                        flat[idx] &= 0b11111110
+                        flat[idx] |= bit_array[bit_idx]
+                        bit_idx += 1
+                    else:
+                        flat[idx] &= 0b11111100
+                        flat[idx] |= (bit_array[bit_idx] << 1) | bit_array[bit_idx + 1]
+                        bit_idx += 2
+
+                del var
+                del grad
+                del score
+                del mask
+
+            del block
+            del zone
+
+        self.last_bit_index = bit_idx
+        return img
+
+    def decode(self, img, payload_bit_length):
+        rows, cols, ch = img.shape
+        flat = img.reshape(-1)
+
+        extracted = np.zeros(payload_bit_length, dtype=np.uint8)
+        bit_idx = 0
+
+        for rs in range(0, rows, self.block_rows):
+            re = min(rs + self.block_rows, rows)
+            block = img[rs:re]
+            zone = self._zone(block)
+
+            for c in range(ch):
+                channel = block[:, :, c]
+
+                var = self._variance(channel)
+                grad = self._grad(channel)
+                score = self._score(zone, var, grad, c)
+
+                mask = score >= 40
+                local_idx = np.flatnonzero(mask.ravel())
+                if local_idx.size == 0:
+                    continue
+                if local_idx.size > 0:
+                    self.rng.shuffle(local_idx)
 
 
-_global_map = None
+                bits_per = np.where(score.ravel()[local_idx] >= 60, 2, 1)
+                global_idx = ((rs * cols * ch) + c) + (local_idx * ch)
 
-def initialize_embedding_map(img_array, max_bits=2):
-    global _global_map
-    decider = AdaptiveLSBDecider(max_bits)
-    _global_map = decider.generate_embedding_map(img_array)
-    return _global_map
+                for idx, b in zip(global_idx, bits_per):
+                    if bit_idx >= payload_bit_length:
+                        return extracted
 
-def get_embedding_bits(i, j, channel):
-    global _global_map
-    if _global_map is None:
-        raise RuntimeError("Map not initialized")
-    return int(_global_map[i, j, channel])
+                    val = flat[idx]
+                    remaining = payload_bit_length - bit_idx
+                    use = min(b, remaining)
 
-def get_embedding_map_stats():
-    global _global_map
-    if _global_map is None:
-        return {"error": "No map initialized"}
-    return {
-        "total_capacity_bits": int(_global_map.sum()),
-        "average_bits_per_channel": float(_global_map.mean())
-    }
+                    if use == 1:
+                        extracted[bit_idx] = val & 1
+                        bit_idx += 1
+                    else:
+                        extracted[bit_idx] = (val >> 1) & 1
+                        extracted[bit_idx + 1] = val & 1
+                        bit_idx += 2
 
-def cleanup():
-    global _global_map
-    _global_map = None
+                del var
+                del grad
+                del score
+                del mask
+
+            del block
+            del zone
+
+        return extracted

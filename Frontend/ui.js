@@ -140,31 +140,37 @@ class UIManager {
     }
 
     _renderSpatialDistribution(a) {
-        if (!a.spatial_distribution) return '';
-        let cards = Object.entries(a.spatial_distribution).map(([region, data]) => {
-            const regionName = region.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-            return `
-                <div class="stat-card">
-                    <h4>${regionName}</h4>
-                    <div class="value">${data.percent_changed.toFixed(2)}<span class="unit">%</span></div>
-                    <div class="mini-stat" style="margin-top: 10px;">
-                        <span class="label">Changes</span>
-                        <span class="value">${this.formatNumber(data.changed_pixels)}</span>
-                    </div>
-                    <div class="mini-stat">
-                        <span class="label">Uniformity</span>
-                        <span class="value">${data.uniformity_score.toFixed(3)}</span>
-                    </div>
-                </div>`;
-        }).join('');
-        
+    if (!a.spatial_distribution) return '';
+
+    let cards = Object.entries(a.spatial_distribution).map(([region, data]) => {
+        const regionName = region.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+        const percentChanged = data?.percent_changed ?? 0;
+        const changedPixels = data?.changed_pixels ?? 0;
+        const uniformity = data?.uniformity_score ?? 0;
+
         return `
-            <div class="analysis-section">
-                <h2>Spatial Distribution</h2>
-                <p style="color: #666; font-size: 0.9rem; margin-bottom: 15px;">Analysis of change concentration across image regions (higher uniformity = more evenly distributed changes).</p>
-                <div class="stats-grid">${cards}</div>
+            <div class="stat-card">
+                <h4>${regionName}</h4>
+                <div class="value">${Number(percentChanged).toFixed(2)}<span class="unit">%</span></div>
+                <div class="mini-stat" style="margin-top: 10px;">
+                    <span class="label">Changes</span>
+                    <span class="value">${this.formatNumber(changedPixels)}</span>
+                </div>
+                <div class="mini-stat">
+                    <span class="label">Uniformity</span>
+                    <span class="value">${Number(uniformity).toFixed(3)}</span>
+                </div>
             </div>`;
+    }).join('');
+
+    return `
+        <div class="analysis-section">
+            <h2>Spatial Distribution</h2>
+            <div class="stats-grid">${cards}</div>
+        </div>`;
     }
+
 
     _renderHistogramStats(a) {
         if (!a.histogram_statistics) return '';
