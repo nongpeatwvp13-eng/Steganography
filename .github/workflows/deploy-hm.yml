@@ -1,4 +1,4 @@
-name: Deploy to Hugging Face Space
+Name: Deploy to Hugging Face SpaceName: Deploy to Hugging Face Space
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
 
       - name: Push to Hugging Face Space
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HAGGING_FUCE: ${{ secrets.HAGGING_FUCE }}
         run: |
           git config --global user.email "your@email.com"
           git config --global user.name "BumbleBeeDubDudu"
@@ -25,7 +25,7 @@ jobs:
           rsync -av --exclude='.git' --exclude='hf_space' ./ hf_space/
 
           cd hf_space
-          git remote set-url origin https://BumbleBeeDubDudu:${HF_TOKEN}@huggingface.co/spaces/BumbleBeeDubDudu/stegologo
+          git remote set-url origin https://BumbleBeeDubDudu:${HAGGING_FUCE}@huggingface.co/spaces/BumbleBeeDubDudu/stegologo
 
           git add .
           git commit -m "Auto deploy from GitHub" || echo "No changes"
