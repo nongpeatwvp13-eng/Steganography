@@ -4,7 +4,6 @@ from PIL import Image
 from .AES_256 import SecureAESCipher
 from .decide import AdaptiveLSBCore
 
-
 HEADER_BITS = 32
 
 
@@ -21,26 +20,26 @@ def _header_positions(flat_size: int, seed: int):
 
 
 def decode_LSB(stego_path, password):
-
     img = Image.open(stego_path).convert("RGB")
     img_array = np.array(img, dtype=np.uint8)
 
-    flat = img_array.reshape(-1)
+    flat      = img_array.reshape(-1)
     flat_size = flat.size
 
-    seed = _seed(password)
+    seed             = _seed(password)
     header_positions = _header_positions(flat_size, seed)
 
-    header_bits = flat[header_positions] & 1
-
-    payload_bit_length = int(
-        np.packbits(header_bits).view(">u4")[0]
-    )
+    header_bits        = flat[header_positions] & np.uint8(1)
+    payload_bit_length = int(np.packbits(header_bits).view(">u4")[0])
 
     if payload_bit_length <= 0:
         return "Error: No hidden message"
 
-    core = AdaptiveLSBCore()
+    core          = AdaptiveLSBCore(seed_key=password, exclude_positions=header_positions)
+    real_capacity = core.capacity(img_array)
+
+    if payload_bit_length > real_capacity:
+        return "Error: Invalid header — corrupted or wrong password"
 
     extracted_bits = core.decode(img_array, payload_bit_length)
 

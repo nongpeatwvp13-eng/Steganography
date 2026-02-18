@@ -11,6 +11,7 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(BASE_DIR)
 
+
 class CustomJSONProvider(DefaultJSONProvider):
     def default(self, obj):
         if isinstance(obj, (np.integer, np.int64)):
@@ -20,6 +21,7 @@ class CustomJSONProvider(DefaultJSONProvider):
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         return super().default(obj)
+
 
 app = Flask(
     __name__,
@@ -39,15 +41,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 Image.MAX_IMAGE_PIXELS = 2000000000
-app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"]      = 1024 * 1024 * 1024
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 31536000
 
 from Functions.Stego import encode_message, decode_message, get_image_stats
 from Analyze.image_analyzer import comprehensive_analysis
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "bmp", "webp", "tiff", "tif"}
-HEADER_BITS = 32
-HEADER_BYTES = HEADER_BITS // 8
 
 
 def allowed_file(filename):
@@ -68,49 +68,32 @@ def image_to_base64(img_path, max_size=(400, 400), quality=60):
         return None
 
 
-def estimate_encrypted_size(message: str) -> int:
-    raw = len(message.encode("utf-8"))
-    padded = ((raw // 16) + 1) * 16
-    total = 16 + padded
-    return int(total * 1.4)
-
-
 @app.route("/api/encode", methods=["POST"])
 def encode():
     with tempfile.TemporaryDirectory() as tmp_dir:
         try:
             if "image" not in request.files:
                 return jsonify({"error": "No image uploaded"}), 400
-
             if "message" not in request.form or "password" not in request.form:
                 return jsonify({"error": "Missing message or password"}), 400
 
             image_file = request.files["image"]
-
             if not allowed_file(image_file.filename):
                 return jsonify({"error": "Invalid file type"}), 400
 
-            input_path = os.path.join(tmp_dir, f"original_{secure_filename(image_file.filename)}")
+            input_path  = os.path.join(tmp_dir, f"original_{secure_filename(image_file.filename)}")
             output_path = os.path.join(tmp_dir, "encoded.png")
-
             image_file.save(input_path)
 
-            stats = get_image_stats(input_path, real_capacity=True)
-
-            estimated_bytes = estimate_encrypted_size(request.form["message"])
-            required_bits = (estimated_bytes + HEADER_BYTES) * 8
-
-            if required_bits > stats["practical_max_bits"]:
-                return jsonify({
-                    "error": f"Image capacity too low. Need {required_bits} bits, have {stats['practical_max_bits']} bits."
-                }), 400
-
-            encode_message(
-                input_path,
-                request.form["message"],
-                request.form["password"],
-                output_path
-            )
+            try:
+                encode_message(
+                    input_path,
+                    request.form["message"],
+                    request.form["password"],
+                    output_path
+                )
+            except ValueError as ve:
+                return jsonify({"error": str(ve)}), 400
 
             return send_file(
                 output_path,
@@ -132,7 +115,6 @@ def decode():
                 return jsonify({"error": "Missing required fields"}), 400
 
             image_file = request.files["image"]
-
             if not allowed_file(image_file.filename):
                 return jsonify({"error": "Invalid file type"}), 400
 
@@ -143,7 +125,6 @@ def decode():
 
             if not message:
                 return jsonify({"success": False, "error": "No hidden message found"}), 400
-
             if isinstance(message, str) and message.startswith("Error:"):
                 return jsonify({"success": False, "error": message}), 400
 
@@ -162,7 +143,6 @@ def analyze():
                 return jsonify({"error": "Both images required"}), 400
 
             paths = {}
-
             for key in ["original", "stego"]:
                 f = request.files[key]
                 if not allowed_file(f.filename):
@@ -176,8 +156,8 @@ def analyze():
                 return jsonify({"success": False, "error": analysis_results["error"]}), 500
 
             analysis_results["original_image"] = image_to_base64(paths["original"])
-            analysis_results["stego_image"] = image_to_base64(paths["stego"])
-            analysis_results["success"] = True
+            analysis_results["stego_image"]    = image_to_base64(paths["stego"])
+            analysis_results["success"]        = True
 
             return jsonify(analysis_results)
 
@@ -194,17 +174,14 @@ def check_capacity():
                 return jsonify({"success": False, "error": "No image uploaded"}), 400
 
             image_file = request.files["image"]
-
             if not allowed_file(image_file.filename):
                 return jsonify({"success": False, "error": "Invalid file type"}), 400
 
-            is_real = request.form.get("real", "false").lower() == "true"
-
+            is_real    = request.form.get("real", "false").lower() == "true"
             input_path = os.path.join(tmp_dir, secure_filename(image_file.filename))
             image_file.save(input_path)
 
             capacity = get_image_stats(input_path, real_capacity=is_real)
-
             return jsonify({"success": True, "capacity": capacity})
 
         except Exception as e:
@@ -225,13 +202,13 @@ def index():
 def serve_static(path):
     for folder in ["dist", "Frontend"]:
         dir_path = os.path.join(BASE_DIR, folder)
-        full = os.path.join(dir_path, path)
+        full     = os.path.join(dir_path, path)
         if os.path.exists(full):
             return send_from_directory(dir_path, path)
     return jsonify({"error": "File not found"}), 404
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port  = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_ENV") != "production"
     app.run(debug=debug, port=port, host="0.0.0.0", threaded=True)
