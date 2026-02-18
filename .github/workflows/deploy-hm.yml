@@ -3,7 +3,7 @@ name: Deploy to Hugging Face Space
 on:
   push:
     branches:
-      - main
+      - main 
 
 jobs:
   deploy:
@@ -19,11 +19,15 @@ jobs:
         run: |
           git config --global user.email "your@email.com"
           git config --global user.name "BumbleBeeDubDudu"
+
           git clone https://huggingface.co/spaces/BumbleBeeDubDudu/stegologo hf_space
           cd hf_space
-          git remote set-url origin https://BumbleBeeDubDudu:$HAGGING_FUCE@huggingface.co/spaces/BumbleBeeDubDudu/stegologo
+          git remote set-url origin https://BumbleBeeDubDudu:${HAGGING_FUCE}@huggingface.co/spaces/BumbleBeeDubDudu/stegologo
+
           rm -rf *
           cp -r ../* .
+          rm -rf .github
+
           git add .
           git commit -m "Auto deploy from GitHub" || echo "No changes"
           git push origin main
