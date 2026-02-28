@@ -40,8 +40,8 @@ CORS(app, resources={
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-Image.MAX_IMAGE_PIXELS = 2000000000
-app.config["MAX_CONTENT_LENGTH"]      = 1024 * 1024 * 1024
+Image.MAX_IMAGE_PIXELS = 100_000_000  # 100 megapixels
+app.config["MAX_CONTENT_LENGTH"]      = 50 * 1024 * 1024  # 50 MB
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 31536000
 
 from Functions.Stego import encode_message, decode_message, get_image_stats

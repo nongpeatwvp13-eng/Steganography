@@ -1,20 +1,27 @@
-from .encode_LSB import encode_LSB
+from typing import Any, Dict
+
+import numpy as np
+from PIL import Image
+
 from .decode_LSB import decode_LSB
 from .decide import AdaptiveLSBCore
-
-from PIL import Image
-import numpy as np
+from .encode_LSB import encode_LSB
 
 
-def encode_message(input_img_path, message, password, output_img_path):
+def encode_message(
+    input_img_path: str,
+    message: str,
+    password: str,
+    output_img_path: str,
+) -> None:
     return encode_LSB(input_img_path, message, password, output_img_path)
 
 
-def decode_message(stego_img_path, password):
+def decode_message(stego_img_path: str, password: str) -> str:
     return decode_LSB(stego_img_path, password)
 
 
-def get_image_stats(img_path, real_capacity=False):
+def get_image_stats(img_path: str, real_capacity: bool = False) -> Dict[str, Any]:
     with Image.open(img_path) as img:
         img = img.convert("RGB")
         arr = np.array(img, dtype=np.uint8)

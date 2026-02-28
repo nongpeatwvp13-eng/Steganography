@@ -241,25 +241,60 @@ def analyze_spatial_distribution(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str
 
 
 def analyze_lsb_changes(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:
+    """Compute per-channel LSB change statistics."""
     try:
-        lsb_changes = np.int64(0)
-        total       = 0
-        one  = np.uint8(1)
+        one = np.uint8(1)
+        channel_names = ['red', 'green', 'blue']
+        n_ch = arr1.shape[2] if len(arr1.shape) == 3 else 1
+        per_channel: Dict[str, Any] = {}
 
-        for b1, b2 in _iter_blocks(arr1, arr2):
-            lsb_changes += np.sum(np.bitwise_xor(b1 & one, b2 & one), dtype=np.int64)
-            total += b1.size
+        for c in range(n_ch):
+            if len(arr1.shape) == 3:
+                ch1 = arr1[:, :, c]
+                ch2 = arr2[:, :, c]
+            else:
+                ch1 = arr1
+                ch2 = arr2
 
-        ratio = float(lsb_changes) / total if total > 0 else 0.0
+            changes = int(np.sum(np.bitwise_xor(ch1 & one, ch2 & one)))
+            total = ch1.size
+            ratio = float(changes) / total if total > 0 else 0.0
+
+            # Compute entropy of the stego LSB plane
+            lsb_plane = (ch2 & one).ravel()
+            ones = int(np.sum(lsb_plane))
+            ones_ratio = float(ones) / lsb_plane.size if lsb_plane.size > 0 else 0.5
+            p1 = ones_ratio
+            p0 = 1.0 - p1
+            if p0 > 0 and p1 > 0:
+                entropy = -(p0 * math.log2(p0) + p1 * math.log2(p1))
+            else:
+                entropy = 0.0
+
+            name = channel_names[c] if c < len(channel_names) else f'ch{c}'
+            per_channel[name] = {
+                'changes': changes,
+                'percent_changed': ratio * 100,
+                'entropy': entropy,
+                'randomness_score': entropy,
+                'ones_ratio': ones_ratio,
+            }
+
+        total_changes = sum(v['changes'] for v in per_channel.values())
+        total_pixels = arr1.size
+        overall_ratio = float(total_changes) / total_pixels if total_pixels > 0 else 0.0
 
         return {
-            'lsb_change_ratio':  ratio,
-            'lsb_changes_count': int(lsb_changes),
-            'bit_plane_changes': [ratio]
+            'lsb_change_ratio': overall_ratio,
+            'lsb_changes_count': total_changes,
+            'per_channel': per_channel,
         }
     except Exception as e:
         logger.error(f"LSB analysis error: {e}")
-        return {'lsb_change_ratio': 0.0, 'lsb_changes_count': 0, 'bit_plane_changes': [0.0]}
+        empty_ch = {'changes': 0, 'percent_changed': 0.0, 'entropy': 0.0,
+                     'randomness_score': 0.0, 'ones_ratio': 0.5}
+        return {'lsb_change_ratio': 0.0, 'lsb_changes_count': 0,
+                'per_channel': {'red': dict(empty_ch), 'green': dict(empty_ch), 'blue': dict(empty_ch)}}
 
 
 def analyze_histogram_changes(arr1: np.ndarray, arr2: np.ndarray) -> Dict[str, Any]:
@@ -443,9 +478,21 @@ def comprehensive_analysis(original_path: str, stego_path: str) -> Dict[str, Any
         pixel_diff   = analyze_pixel_differences(orig, stego)
         spatial_dist = analyze_spatial_distribution(orig, stego)
         lsb_data     = analyze_lsb_changes(orig, stego)
-        hist_data    = analyze_histogram_changes(orig_gray, stego_gray)
+        hist_data    = analyze_histogram_changes(orig, stego)
         corr_data    = analyze_correlation(orig, stego)
         noise_data   = analyze_noise_characteristics(orig, stego)
+
+        # Build per-channel histogram arrays for the frontend charts
+        histogram_original: Dict[str, Any] = {}
+        histogram_stego: Dict[str, Any] = {}
+        ch_names = ['red', 'green', 'blue']
+        if len(orig.shape) == 3:
+            for i, name in enumerate(ch_names[:orig.shape[2]]):
+                histogram_original[name] = np.bincount(orig[:, :, i].ravel(), minlength=256).tolist()
+                histogram_stego[name] = np.bincount(stego[:, :, i].ravel(), minlength=256).tolist()
+        else:
+            histogram_original['gray'] = np.bincount(orig.ravel(), minlength=256).tolist()
+            histogram_stego['gray'] = np.bincount(stego.ravel(), minlength=256).tolist()
 
         total_pixels   = orig.size
         changed_pixels = int(pixel_diff['changed_pixels_ratio'] * total_pixels)
@@ -545,36 +592,17 @@ def comprehensive_analysis(original_path: str, stego_path: str) -> Dict[str, Any
                 'blue':  _entropy_block(2),
             },
 
-            'lsb_analysis': {
-                'red': {
-                    'changes':          lsb_data['lsb_changes_count'] // 3 if n_ch == 3 else lsb_data['lsb_changes_count'],
-                    'percent_changed':  lsb_data['lsb_change_ratio'] * 100,
-                    'entropy':          lsb_data['bit_plane_changes'][0],
-                    'randomness_score': lsb_data['bit_plane_changes'][0],
-                    'ones_ratio':       0.5
-                },
-                'green': {
-                    'changes':          lsb_data['lsb_changes_count'] // 3 if n_ch == 3 else lsb_data['lsb_changes_count'],
-                    'percent_changed':  lsb_data['lsb_change_ratio'] * 100,
-                    'entropy':          lsb_data['bit_plane_changes'][0],
-                    'randomness_score': lsb_data['bit_plane_changes'][0],
-                    'ones_ratio':       0.5
-                },
-                'blue': {
-                    'changes':          lsb_data['lsb_changes_count'] // 3 if n_ch == 3 else lsb_data['lsb_changes_count'],
-                    'percent_changed':  lsb_data['lsb_change_ratio'] * 100,
-                    'entropy':          lsb_data['bit_plane_changes'][0],
-                    'randomness_score': lsb_data['bit_plane_changes'][0],
-                    'ones_ratio':       0.5
-                }
-            },
+            'lsb_analysis': lsb_data['per_channel'],
 
             'noise_analysis': {
                 'snr':      snr,
                 'std_noise': noise_data['noise_std']
             },
 
-            'correlation_analysis': corr_data
+            'correlation_analysis': corr_data,
+
+            'histogram_original': histogram_original,
+            'histogram_stego':    histogram_stego,
         }
 
         return results

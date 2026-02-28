@@ -1,18 +1,17 @@
 import numpy as np
-import hashlib
 from PIL import Image
+
 from .AES_256 import SecureAESCipher
+from .common import HEADER_BITS, derive_seed, header_positions
 from .decide import AdaptiveLSBCore
 
-HEADER_BITS = 32
 
-
-def _seed(password: str) -> int:
-    d = hashlib.sha256(password.encode()).digest()
-    return int.from_bytes(d[:4], "big")
-
-
-def encode_LSB(image_path, plaintext, password, output_path):
+def encode_LSB(
+    image_path: str,
+    plaintext: str,
+    password: str,
+    output_path: str,
+) -> None:
     img = Image.open(image_path).convert("RGB")
     img_array = np.array(img, dtype=np.uint8)
 
@@ -20,11 +19,8 @@ def encode_LSB(image_path, plaintext, password, output_path):
     if flat_size < HEADER_BITS:
         raise ValueError("Image too small for header")
 
-    seed = _seed(password)
-    header_positions = np.random.Generator(
-        np.random.PCG64(seed)
-    ).choice(flat_size, size=HEADER_BITS, replace=False)
-    header_positions.sort()
+    seed = derive_seed(password)
+    hdr_positions = header_positions(flat_size, seed)
 
     cipher        = SecureAESCipher(password)
     payload_bytes = cipher.encrypt(plaintext)
@@ -34,7 +30,7 @@ def encode_LSB(image_path, plaintext, password, output_path):
     if payload_bit_length <= 0:
         raise ValueError("Empty payload")
 
-    core      = AdaptiveLSBCore(seed_key=password, exclude_positions=header_positions)
+    core      = AdaptiveLSBCore(seed_key=password, exclude_positions=hdr_positions)
     available = core.capacity(img_array)
 
     if payload_bit_length > available:
@@ -49,6 +45,6 @@ def encode_LSB(image_path, plaintext, password, output_path):
     header_bits_arr = np.unpackbits(
         np.array([payload_bit_length], dtype=">u4").view(np.uint8)
     )
-    flat[header_positions] = (flat[header_positions] & np.uint8(0xFE)) | header_bits_arr
+    flat[hdr_positions] = (flat[hdr_positions] & np.uint8(0xFE)) | header_bits_arr
 
     Image.fromarray(img_array).save(output_path)
