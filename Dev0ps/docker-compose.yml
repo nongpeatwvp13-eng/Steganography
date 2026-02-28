@@ -21,7 +21,7 @@ services:
   dev:
     build:
       context: .
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"  # Vite
       - "5001:5000"  # Flask
@@ -32,6 +32,6 @@ services:
       - .:/app
       - /app/node_modules
       - /app/dist
-    command: bash start-codespaces.sh
+    command: bash run.sh
     profiles:
       - dev
